@@ -14,3 +14,7 @@ artifacts
 *.pem
 *.key
 *.enc
+merchant-demo
+Pay_Callback_Demo.zip
+Pay_Callback_Demo.zip.sha256
+tools

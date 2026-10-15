@@ -19,3 +19,15 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci --no-fund && npm run build
         working-directory: frontend
+  merchant-demo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+        working-directory: merchant-demo
+      - run: python -m unittest discover -s tests -v
+        working-directory: merchant-demo
+      - run: python tools/package_merchant_demo.py --check

@@ -1,0 +1,8 @@
+.env
+.env.*
+secrets
+data
+.git
+.venv
+__pycache__
+tests

@@ -1,0 +1,7 @@
+test.bingyun.vip {
+	encode zstd gzip
+	request_body {
+		max_size 32KB
+	}
+	reverse_proxy merchant:8100
+}
