@@ -1,0 +1,18 @@
+# ByPay · 支付宝测试工具 依赖
+# 安装：.venv/bin/pip install -r requirements.txt
+-r requirements-web.txt
+
+# 支付宝开放平台官方完整 SDK（含全部接口，不只是网页支付）
+alipay-sdk-python>=3.7.1411
+
+# 本地加密（保护配置中的私钥/公钥）
+cryptography>=42.0
+
+# 支付链接二维码生成（带图片输出）
+qrcode[pil]>=8.0
+pillow>=10.0
+
+# 二维码解码（用于自检：验证生成的二维码内容是否正确）
+# 注意：pyzbar 需要系统库 libzbar0
+#   sudo apt-get install -y libzbar0
+pyzbar>=0.1.9

@@ -1,0 +1,16 @@
+alipay-sdk-python==3.7.1411
+cryptography==48.0.1
+Flask==3.1.3
+gunicorn==26.2.0
+python-dotenv==1.2.4
+blinker==1.9.0
+cffi==2.1.1
+click==8.5.0
+itsdangerous==2.2.0
+Jinja2==3.1.6
+MarkupSafe==3.0.4
+pyasn1==0.6.4
+pycparser==3.11
+pycryptodome==4.0.0
+rsa==4.9.1
+Werkzeug==3.1.9

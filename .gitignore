@@ -1,0 +1,35 @@
+# 虚拟环境
+.venv/
+venv/
+
+# 运行时数据（含加密配置、主密钥、订单记录）
+data/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Credentials and local diagnostics are never published.
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+*.enc
+*.log
+*.sqlite*
+*.db
+*.jsonl
+.pytest_cache/
+.coverage
+node_modules/
+dist/
+artifacts/
+test-results/
+playwright-report/
+
+# Historical local scripts contain real test identifiers. Keep them local.
+/scripts/
+/README.md

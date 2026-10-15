@@ -1,0 +1,16 @@
+**/.git
+**/.venv
+**/node_modules
+**/dist
+**/__pycache__
+data
+secrets
+.env
+.env.*
+README.md
+scripts
+tests
+artifacts
+*.pem
+*.key
+*.enc
