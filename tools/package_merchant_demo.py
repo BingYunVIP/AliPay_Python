@@ -9,8 +9,8 @@ ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "merchant-demo"
 ARCHIVE = ROOT / "Pay_Callback_Demo.zip"
 FILES = (
-    ".dockerignore", ".env.example", ".gitignore", "Caddyfile", "Dockerfile",
-    "app.py", "compose.existing-proxy.yaml", "compose.yaml", "configure.py", "pay_http.py",
+    ".env.example", ".gitignore", "app.py", "configure.py", "pay_http.py",
+    "deploy/bypay-merchant-demo.service", "deploy/nginx-test.conf",
     "requirements.txt", "run.sh", "static/app.js", "static/index.html", "static/style.css",
     "tests/test_demo.py", "tests/test_pay_http.py", "wsgi.py",
 )

@@ -48,26 +48,21 @@ def main():
         if source.resolve() != dest.resolve():
             shutil.copyfile(source, dest)
         dest.chmod(0o600)
-        if os.geteuid() == 0:
-            os.chown(dest, 10001, 10001)
-    if os.geteuid() == 0:
-        os.chown(secret_dir, 10001, 10001)
-    values = {"BYPAY_DOMAIN": domain, "PUBLIC_BASE_URL": f"https://{domain}", "ALIPAY_ENV": env,
+    (ROOT / "data").mkdir(mode=0o700, exist_ok=True)
+    values = {"PUBLIC_BASE_URL": f"https://{domain}", "ALIPAY_ENV": env,
               "ALIPAY_APP_ID": app_id, "ALIPAY_SELLER_ID": seller_id,
-              "ALIPAY_PRIVATE_KEY_FILE": "/app/secrets/app-private.pem", "ALIPAY_PUBLIC_KEY_FILE": "/app/secrets/alipay-public.pem",
+              "ALIPAY_PRIVATE_KEY_FILE": str(secret_dir / "app-private.pem"), "ALIPAY_PUBLIC_KEY_FILE": str(secret_dir / "alipay-public.pem"),
               "BYPAY_ADMIN_EMAIL": email, "BYPAY_ADMIN_PASSWORD": password, "ALLOW_REGISTRATION": allow,
-              "TEST_MAX_AMOUNT": "10.00", "DATABASE": "/app/data/web.sqlite3",
-              "BYPAY_LOG_FILE": "/app/data/logs/payment.jsonl", "BYPAY_TRUST_PROXY": "1"}
+              "TEST_MAX_AMOUNT": "10.00", "DATABASE": str(ROOT / "data/web.sqlite3"),
+              "BYPAY_LOG_FILE": str(ROOT / "data/logs/payment.jsonl"), "BYPAY_TRUST_PROXY": "1",
+              "BYPAY_CALLBACK_HOSTS": "test.bingyun.vip"}
     def quote(value):
         return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
     with target.open("x") as fp:
         fp.write("\n".join(f"{key}={quote(value)}" for key, value in values.items()) + "\n")
     print(f"\n已保存配置。回调地址：https://{domain}/alipay/notify")
-    if os.geteuid() != 0:
-        print("容器读取密钥前需执行：sudo chown -R 10001:10001 secrets")
-    print("启动：docker compose up -d --build")
-    print("如 VPS 已有 HTTPS 反代：docker compose -f compose.yaml -f compose.existing-proxy.yaml up -d --build")
-    print("已有反代时，将 pay.bingyun.vip 指向本机 127.0.0.1:8000。")
+    print("原生启动：./run-web.sh（监听 127.0.0.1:8000，同时启动回调 worker）")
+    print("systemd 服务模板位于 deploy/；现有 Nginx 将 pay.bingyun.vip 代理到 127.0.0.1:8000。")
     print("访问站点登录后，在控制台查看订单、事件日志与回调检查。")
 
 

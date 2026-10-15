@@ -13,8 +13,8 @@ ROOT = Path(__file__).resolve().parent
 
 def main():
     parser = argparse.ArgumentParser(description="配置独立商户测试站")
-    parser.add_argument("--native", action="store_true", help="生成 Linux / systemd 本机路径；默认使用 Docker 路径")
-    args = parser.parse_args()
+    parser.add_argument("--native", action="store_true", help="原生部署（默认模式，兼容此参数）")
+    parser.parse_args()
     os.umask(0o077)
     target = ROOT / ".env"
     if target.exists():
@@ -39,27 +39,18 @@ def main():
     key_file = secrets_dir / "bypay-public.pem"
     key_file.write_text(public_key)
     key_file.chmod(0o600)
-    if not args.native and os.geteuid() == 0:
-        os.chown(secrets_dir, 10001, 10001)
-        os.chown(key_file, 10001, 10001)
+    (ROOT / "data").mkdir(mode=0o700, exist_ok=True)
     values = {"PAY_ORIGIN": "https://pay.bingyun.vip", "DEMO_ORIGIN": "https://test.bingyun.vip",
-              "PAY_API_KEY": api_key, "PAY_PUBLIC_KEY_FILE": str(key_file) if args.native else "/app/secrets/bypay-public.pem",
+              "PAY_API_KEY": api_key, "PAY_PUBLIC_KEY_FILE": str(key_file),
               "DEMO_USER": "tester", "DEMO_PASSWORD": password,
-              "DATABASE": str(ROOT / "data/demo.sqlite3") if args.native else "/app/data/demo.sqlite3"}
+              "DATABASE": str(ROOT / "data/demo.sqlite3")}
     def quote(value):
         return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
     with target.open("x") as fp:
         fp.write("\n".join(f"{k}={quote(v)}" for k, v in values.items()) + "\n")
     print("已配置独立商户测试站。登录用户名：tester")
-    if args.native:
-        print("本机启动：./run.sh（监听 127.0.0.1:8100）")
-        print("将 test.bingyun.vip 的现有 Nginx 反向代理指向 127.0.0.1:8100。")
-        return
-    print("独立 VPS 启动：docker compose up -d --build")
-    print("如 VPS 已有 HTTPS 反代：docker compose -f compose.yaml -f compose.existing-proxy.yaml up -d --build")
-    print("已有反代时，将 test.bingyun.vip 指向本机 127.0.0.1:8100。")
-    if os.geteuid() != 0:
-        print("容器读取公钥前执行：sudo chown -R 10001:10001 secrets")
+    print("本机启动：./run.sh（监听 127.0.0.1:8100）")
+    print("systemd 服务模板位于 deploy/，将 test.bingyun.vip 的现有 Nginx 反向代理指向 127.0.0.1:8100。")
 
 
 if __name__ == "__main__":

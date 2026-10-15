@@ -71,7 +71,7 @@ class PayHttpTests(unittest.TestCase):
         public_key = Ed25519PrivateKey.generate().public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo).decode()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            with patch.object(configure, "ROOT", root), patch("sys.argv", ["configure.py", "--native"]), \
+            with patch.object(configure, "ROOT", root), patch("sys.argv", ["configure.py"]), \
                     patch("configure.getpass.getpass", side_effect=["byp_" + "x" * 43, "Demo-password-for-tests", "Demo-password-for-tests"]), \
                     patch("configure.os.chown") as chown, patch("builtins.print"), \
                     self.mock_client(lambda _: httpx.Response(200, json={"algorithm": "Ed25519", "public_key": public_key})):

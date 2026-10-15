@@ -1,0 +1,22 @@
+[Unit]
+Description=BingYun Pay web service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/AliPay_Python
+EnvironmentFile=/root/AliPay_Python/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/root/AliPay_Python/.venv/bin/gunicorn --bind 127.0.0.1:8000 --workers 2 --threads 4 --timeout 30 --umask 0077 --no-control-socket web.wsgi:app
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+TimeoutStopSec=40
+
+[Install]
+WantedBy=multi-user.target
