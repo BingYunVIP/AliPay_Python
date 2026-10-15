@@ -1,5 +1,7 @@
 .env
 .env.*
+.admin-credentials
+.access-credentials
 secrets
 data
 .git

@@ -2,6 +2,8 @@
 .env.*
 !.env.example
 secrets/
+.admin-credentials
+.access-credentials
 data/
 .venv/
 __pycache__/
