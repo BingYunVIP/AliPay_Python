@@ -35,3 +35,6 @@ playwright-report/
 # Historical local scripts contain real test identifiers. Keep them local.
 /scripts/
 /README.md
+
+.tools/
+.venv.previous-*/

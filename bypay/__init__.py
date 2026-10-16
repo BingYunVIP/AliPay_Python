@@ -15,7 +15,6 @@
     alipay_client.py  支付宝官方 SDK 封装
     notify_server.py  本地回调接收服务（notify / return / health）
     tunnel.py         公网隧道（cloudflared），让支付宝能回调到本机
-    menus/            菜单（配置 / 设置 / 支付 / 订单 / 回调 / 自检 / 日志）
 """
 
 __version__ = "0.1.0"

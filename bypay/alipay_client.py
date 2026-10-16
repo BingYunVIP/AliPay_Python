@@ -10,7 +10,7 @@
     refund                交易退款
     verify_notify         异步通知验签
 
-后续可扩展：wap（手机网站）、precreate（当面付扫码）、app（APP 支付）……
+支持网页、手机网站、APP 与小程序支付，使用官方 SDK 加签与验签
 """
 
 from __future__ import annotations
@@ -23,6 +23,10 @@ from .key_utils import normalize_private_key, normalize_public_key
 
 class AlipayError(RuntimeError):
     """支付宝调用相关错误。"""
+
+    def __init__(self, message, code="payment_provider_error"):
+        super().__init__(message)
+        self.code = code
 
 
 def _sdk_imports():
@@ -60,7 +64,7 @@ def _sdk_imports():
         raise AlipayError(
             f"无法导入支付宝官方 SDK（缺失模块：{missing}）。\n"
             "  最常见原因：用了系统 python3，而不是项目虚拟环境。\n"
-            "  正确运行方式：./run.sh   或   .venv/bin/python main.py\n"
+            "  请运行 ./ByPay.sh 并选择「部署」以安装依赖\n"
             "  若确实缺少依赖：.venv/bin/pip install -r requirements.txt"
         ) from exc
     return locals()
@@ -97,6 +101,7 @@ class AlipayClient:
         except Exception as exc:  # noqa: BLE001
             raise AlipayError(f"支付宝公钥格式无法识别：{exc}") from exc
         conf.sign_type = cfg.get("sign_type") or "RSA2"
+        conf.skip_sign = False
         conf.charset = cfg.get("charset") or "utf-8"
         conf.format = "json"
         conf.timeout = 15
@@ -118,7 +123,10 @@ class AlipayClient:
         model.total_amount = str(amount)
         model.subject = subject
         model.product_code = PRODUCT_CODE_PAGE
-        model.timeout_express = timeout_express
+        model.qr_pay_mode = self.cfg.get("qr_pay_mode")
+        model.qrcode_width = self.cfg.get("qrcode_width")
+        model.timeout_express = self.cfg.get("timeout_express", timeout_express)
+        model.time_expire = self.cfg.get("time_expire")
 
         request = self._sdk["AlipayTradePagePayRequest"](biz_model=model)
         if self.cfg.get("notify_url"):
@@ -148,7 +156,8 @@ class AlipayClient:
         model.total_amount = amount
         model.subject = subject
         model.product_code = "QUICK_WAP_WAY"
-        model.timeout_express = "15m"
+        model.timeout_express = self.cfg.get("timeout_express", "15m")
+        model.time_expire = self.cfg.get("time_expire")
         request = AlipayTradeWapPayRequest(biz_model=model)
         request.notify_url = self.cfg.get("notify_url", "")
         request.return_url = self.cfg.get("return_url", "")
@@ -156,6 +165,40 @@ class AlipayClient:
             return self._client.page_execute(request, http_method="GET")
         except Exception as exc:
             raise AlipayError("生成手机网站支付链接失败") from exc
+
+    def create_app_pay_string(self, out_trade_no: str, amount: str, subject: str) -> str:
+        """Locally sign orderString for the native Alipay SDK; no network or charge."""
+        from alipay.aop.api.domain.AlipayTradeAppPayModel import AlipayTradeAppPayModel
+        from alipay.aop.api.request.AlipayTradeAppPayRequest import AlipayTradeAppPayRequest
+        model = AlipayTradeAppPayModel()
+        model.out_trade_no, model.total_amount, model.subject = out_trade_no, amount, subject
+        model.product_code = "QUICK_MSECURITY_PAY"
+        model.timeout_express = self.cfg.get("timeout_express", "15m")
+        model.time_expire = self.cfg.get("time_expire")
+        request = AlipayTradeAppPayRequest(biz_model=model)
+        request.notify_url = self.cfg.get("notify_url", "")
+        try:
+            return self._client.sdk_execute(request)
+        except Exception as exc:
+            raise AlipayError("生成 APP 支付参数失败") from exc
+
+    def create_mini_trade(self, out_trade_no: str, amount: str, subject: str, *, buyer=None) -> dict:
+        """Create a mini-program trade; execute verifies the response."""
+        from alipay.aop.api.domain.AlipayTradeCreateModel import AlipayTradeCreateModel
+        from alipay.aop.api.request.AlipayTradeCreateRequest import AlipayTradeCreateRequest
+        model = AlipayTradeCreateModel()
+        model.out_trade_no, model.total_amount, model.subject = out_trade_no, amount, subject
+        model.seller_id = self.cfg["seller_id"]
+        model.timeout_express = self.cfg.get("timeout_express", "15m")
+        model.time_expire = self.cfg.get("time_expire")
+        for key, value in (buyer or {}).items(): setattr(model, key, value)
+        request = AlipayTradeCreateRequest(biz_model=model)
+        request.notify_url = self.cfg.get("notify_url", "")
+        try:
+            data = _parse_response(self._client.execute(request))
+        except Exception as exc:
+            raise _wrap_api_error(exc, "创建支付宝交易") from exc
+        return {"is_success": data.get("code") == "10000", **data, "sdk_response": logger.safe_params(data)}
 
     # ---------------------------------------------------------- 交易查询
     def query(self, out_trade_no: str = "", trade_no: str = "") -> dict:
@@ -187,6 +230,8 @@ class AlipayClient:
             "out_trade_no": data.get("out_trade_no", ""),
             "trade_status": data.get("trade_status", ""),
             "total_amount": data.get("total_amount", ""),
+            "app_id": data.get("app_id", ""),
+            "seller_id": data.get("seller_id", ""),
             "buyer_logon_id": data.get("buyer_logon_id", ""),
             "send_pay_date": str(data.get("send_pay_date", "")),
             "sdk_response": logger.safe_params(data),
@@ -194,7 +239,7 @@ class AlipayClient:
         logger.info(
             "alipay", "交易查询完成",
             订单号=out_trade_no or trade_no,
-            交易状态=result.get("trade_status") or "未支付",
+            交易状态=result.get("trade_status") or ("尚未生成交易" if result.get("sub_code") == "ACQ.TRADE_NOT_EXIST" else "查询未成功"),
             返回码=result.get("code"),
             子错误=result.get("sub_code") or "-",
         )
@@ -224,9 +269,12 @@ class AlipayClient:
         }
 
     # ---------------------------------------------------------- 交易退款
-    def refund(self, out_trade_no: str, amount: str, refund_reason: str = "测试退款") -> dict:
+    def refund(self, out_trade_no: str, amount: str, refund_reason: str = "测试退款", *, out_request_no="", trade_no="") -> dict:
+        import hashlib
         model = self._sdk["AlipayTradeRefundModel"]()
         model.out_trade_no = out_trade_no
+        model.trade_no = trade_no or None
+        model.out_request_no = out_request_no or "CLI_" + hashlib.sha256(f"{out_trade_no}:{amount}:{refund_reason}".encode()).hexdigest()[:32]
         model.refund_amount = str(amount)
         model.refund_reason = refund_reason
 
@@ -237,14 +285,18 @@ class AlipayClient:
             raise _wrap_api_error(exc, "退款") from exc
 
         data = _parse_response(raw)
-        return {
-            "is_success": data.get("code") == "10000",
-            "code": data.get("code", ""),
-            "msg": data.get("msg", ""),
-            "sub_code": data.get("sub_code", ""),
-            "sub_msg": data.get("sub_msg", ""),
-            "refund_fee": data.get("refund_fee", ""),
-        }
+        return {**data, "is_success": data.get("code") == "10000", "sdk_response": logger.safe_params(data)}
+
+    def query_refund(self, out_trade_no, out_request_no):
+        from alipay.aop.api.domain.AlipayTradeFastpayRefundQueryModel import AlipayTradeFastpayRefundQueryModel
+        from alipay.aop.api.request.AlipayTradeFastpayRefundQueryRequest import AlipayTradeFastpayRefundQueryRequest
+        model = AlipayTradeFastpayRefundQueryModel()
+        model.out_trade_no, model.out_request_no = out_trade_no, out_request_no
+        try:
+            data = _parse_response(self._client.execute(AlipayTradeFastpayRefundQueryRequest(biz_model=model)))
+        except Exception as exc:
+            raise _wrap_api_error(exc, "查询退款") from exc
+        return {**data, "is_success": data.get("code") == "10000", "sdk_response": logger.safe_params(data)}
 
     # ---------------------------------------------------------- 异步通知验签
     @staticmethod
@@ -365,7 +417,8 @@ def _wrap_api_error(exc: Exception, action: str) -> "AlipayError":
             "  最常见原因：把「应用公钥」填到了「支付宝公钥」的位置（两者很像，极易混淆）。\n"
             "  正确路径：开放平台 → 我的应用 → 应用详情 → 开发设置 → 接口加签方式\n"
             "            → 点击「查看支付宝公钥」复制（不是应用公钥！）\n"
-            "  快速自检：进入「6 环境自检」，会直接告诉你是否填反。"
+            "  快速自检：进入「6 环境自检」，会直接告诉你是否填反。",
+            code="payment_response_signature_invalid",
         )
 
     if "invalid-app-id" in msg or "无效的APPID" in msg:

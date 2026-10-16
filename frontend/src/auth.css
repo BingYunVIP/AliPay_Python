@@ -1,0 +1,26 @@
+.panel { background: var(--card); border: 1px solid var(--line); border-radius: 18px; }
+.auth-shell { display: flex; align-items: center; justify-content: center; min-height: calc(100svh - 112px); padding-block: 48px; }
+.auth-card { width: 100%; max-width: 400px; padding: 34px; }
+.auth-card-heading { display: flex; align-items: center; gap: 13px; margin-bottom: 26px; }
+.auth-card .auth-logo { width: 40px; height: 40px; border-radius: 10px; }
+.auth-card h2 { font-size: 25px; font-weight: 600; letter-spacing: -.02em; }
+.auth-card .error-box { margin: 18px 0 0; }
+.auth-card .button { margin-top: 25px; min-height: 44px; }
+.auth-switch { margin-top: 24px; text-align: center; color: var(--faint); font-size: 12px; }
+.auth-switch a { color: var(--accent); margin-left: 5px; }
+.return-shell { display: flex; align-items: center; justify-content: center; min-height: calc(100svh - 112px); padding-block: 48px; }
+.return-card { width: 100%; max-width: 480px; text-align: center; padding: 40px; }
+.return-icon { display: flex; align-items: center; justify-content: center; width: 64px; height: 64px; border-radius: 50%; background: var(--accent-wash); color: var(--accent); margin: 0 auto 22px; }
+.return-icon.confirmed { color: var(--green); background: color-mix(in srgb, var(--green) 10%, transparent); }
+.return-icon.uncertain { color: var(--muted); background: var(--card); }
+.return-card h1 { font-size: 28px; font-weight: 600; margin: 12px 0 15px; }
+.return-card p { font-size: 13px; color: var(--muted); }
+.return-details { margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--line); text-align: left; }
+.return-details > div { display: flex; align-items: baseline; justify-content: space-between; gap: 20px; padding: 7px 0; }
+.return-details dt { color: var(--muted); font-size: 12px; flex-shrink: 0; }
+.return-details dd { margin: 0; text-align: right; font-size: 13px; overflow-wrap: anywhere; }
+.return-details .return-amount { font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.return-details .return-number { font-family: var(--mono, monospace); font-size: 11px; }
+.return-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-top: 30px; }
+.return-actions .button { min-height: 44px; }
+@media (max-width: 480px) { .auth-shell { min-height: calc(100svh - 88px); padding-block: 30px; } .auth-card { padding: 28px; } .auth-card-heading { gap: 11px; margin-bottom: 23px; } .auth-card h2 { font-size: 23px; } .auth-card .auth-logo { width: 36px; height: 36px; } .return-card { padding: 35px 25px; } .return-card h1 { font-size: 25px; } }

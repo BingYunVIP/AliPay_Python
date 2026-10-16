@@ -1,0 +1,68 @@
+import { locale, t } from '../state'
+
+export const amount = cents => (Number(cents || 0) / 100).toLocaleString(locale.value === 'zh' ? 'zh-CN' : 'en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+export const date = timestamp => timestamp ? new Date(timestamp * 1000).toLocaleString(locale.value === 'zh' ? 'zh-CN' : 'en-GB', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }) : '—'
+export const fullDate = timestamp => timestamp ? new Date(timestamp * 1000).toLocaleString(locale.value === 'zh' ? 'zh-CN' : 'en-GB', { hour12: false }) : '—'
+export const time = timestamp => timestamp ? new Date(timestamp * 1000).toLocaleTimeString(locale.value === 'zh' ? 'zh-CN' : 'en-GB', { hour12: false }) : '—'
+export const status = value => ({ CREATED: t('待支付', 'Awaiting payment'), PAID: t('已支付', 'Paid'), CLOSED: t('已关闭', 'Closed'), EXPIRED: t('已过期', 'Expired'), REFUNDING: t('退款处理中', 'Refund pending'), PARTIALLY_REFUNDED: t('部分退款', 'Partially refunded'), REFUNDED: t('已退款', 'Refunded'), pending: t('等待投递', 'Pending'), delivered: t('投递成功', 'Delivered'), failed: t('投递失败', 'Failed') })[value] || value
+export const productName = value => ({ page: t('网页支付', 'Web payment'), wap: t('手机支付', 'Mobile payment'), app: t('APP 支付', 'App payment'), mini: t('小程序支付', 'Mini program') })[value] || value
+const messages = {
+  cashier_frame_ready: ['支付宝原生二维码页面已就绪', 'Alipay original QR frame ready'],
+  cashier_qr_requested: ['正在读取支付宝收银台二维码', 'Loading the Alipay cashier QR'],
+  cashier_qr_ready: ['支付宝收银台二维码已就绪', 'Alipay cashier QR ready'],
+  cashier_qr_unavailable: ['未能获取支付宝收银台二维码', 'Alipay cashier QR unavailable'],
+  channel_config_added: ['已添加收款配置', 'Payment configuration added'],
+  order_deleted: ['订单已移入已删除', 'Order moved to deleted'],
+  order_restored: ['订单已恢复', 'Order restored'],
+  refund_requested: ['已提交退款请求', 'Refund requested'],
+  refund_response_received: ['收到支付宝退款响应', 'Alipay refund response received'],
+  refund_query_received: ['收到支付宝退款查询结果', 'Alipay refund query received'],
+  refund_success: ['退款已确认', 'Refund confirmed'],
+  refund_failed: ['退款未成功', 'Refund rejected'],
+  refund_unknown: ['退款结果待确认', 'Refund pending confirmation'],
+  refund_unconfirmed: ['退款结果待确认，将按原请求号核验', 'Refund unconfirmed; verifying the original request'],
+  request_validated: ['创建请求已通过校验', 'Creation request validated'],
+  checkout_url_signed: ['SDK 已生成支付链接', 'SDK signed the checkout URL'],
+  app_order_signed: ['已生成 APP 支付参数，等待客户端调起', 'App payment parameters signed — awaiting native checkout'],
+  provider_creation_requested: ['正在通过官方接口创建交易', 'Creating a trade through the official API'],
+  checkout_ready: ['支付参数已就绪，等待付款', 'Checkout is ready — awaiting payment'],
+  order_saved: ['订单已保存，等待付款', 'Order saved, awaiting payment'],
+  same_order_returned: ['重复请求，返回原订单', 'Duplicate request; original order returned'],
+  query_requested: ['正在查询支付宝交易', 'Query sent to Alipay'],
+  sdk_response_received: ['已收到支付宝查询结果', 'Alipay query response received'],
+  query_verified_and_saved: ['查询结果验签与订单校验通过，状态已同步', 'Query verified and order status synchronized'],
+  awaiting_checkout: ['支付宝尚未生成交易，继续等待', 'Alipay has no transaction yet — waiting'],
+  payment_response_signature_invalid: ['支付宝查询响应验签失败，保留原订单状态', 'Response signature invalid — order unchanged'],
+  payment_request_signature_invalid: ['支付宝请求签名不匹配，请核对 APPID 与密钥', 'Request signature mismatch — check App ID and keys'],
+  payment_app_id_invalid: ['支付宝 APPID 无效', 'Alipay App ID is invalid'],
+  payment_mismatch: ['查询结果与订单不匹配，拒绝更新', 'Query does not match the order — update rejected'],
+  notification_received: ['收到支付宝通知，等待验证', 'Notification received; awaiting verification'],
+  signature_valid: ['RSA2 签名验证通过', 'RSA2 signature verified'],
+  notification_verified_and_saved: ['订单、金额与商户校验通过', 'Order, amount, and merchant verified'],
+  invalid_signature: ['签名验证失败，拒绝通知', 'Invalid signature; notification rejected'],
+  amount_mismatch: ['订单金额不匹配', 'Order amount mismatch'],
+  merchant_mismatch: ['应用或收款商户不匹配', 'App or merchant mismatch'],
+  unknown_order: ['本地不存在该订单', 'Order not found locally'],
+  trade_mismatch: ['支付宝交易号不匹配', 'Alipay trade number mismatch'],
+  trade_conflict: ['支付宝交易号已关联其他订单', 'Trade number belongs to another order'],
+  browser_return_is_not_payment_confirmation: ['浏览器同步返回（不确认到账）', 'Browser returned (does not confirm payment)'],
+  checkout_open_requested: ['用户打开支付宝收银台', 'User opened Alipay checkout'],
+  payment_provider_error: ['支付宝接口调用失败', 'Alipay API request failed'],
+  payment_not_configured: ['支付宝参数尚未配置完整', 'Alipay configuration incomplete'],
+  TRADE_SUCCESS: ['支付成功，订单已入账', 'Payment confirmed'],
+  TRADE_FINISHED: ['交易完成', 'Trade completed'],
+  TRADE_CLOSED: ['交易关闭通知已处理', 'Trade closure processed'],
+  WAIT_BUYER_PAY: ['等待买家付款', 'Waiting for buyer payment'],
+  merchant_callback_delivered: ['商户已确认接收业务回调', 'Merchant acknowledged the callback'],
+  merchant_callback_retry: ['投递失败，已安排自动重试', 'Delivery failed; retry scheduled'],
+  merchant_callback_failed: ['重试已用尽，请检查商户站点', 'Retries exhausted; check merchant endpoint'],
+  callback_retry_scheduled: ['已将回调重新加入投递队列', 'Callback requeued for delivery'],
+  settings_saved: ['系统设置已保存', 'System settings saved'],
+  orders_exported: ['已导出订单记录', 'Orders exported'],
+  user_created: ['已创建普通用户', 'User created'],
+  user_disabled: ['已停用用户并撤销密钥', 'User disabled and API key revoked'],
+  user_enabled: ['已恢复用户访问', 'User access restored'],
+  channel_config_saved: ['渠道配置已加密保存', 'Channel configuration encrypted and saved'],
+}
+export const logMessage = reason => messages[reason] ? t(...messages[reason]) : reason
+export const stageName = stage => ({ refund: t('退款处理', 'Refund processing'), create: t('订单创建', 'Order creation'), sdk: 'Alipay SDK', query: t('交易查询', 'Payment query'), notify: t('支付宝通知', 'Alipay notification'), merchant: t('商户回调', 'Merchant callback'), console: t('操作审计', 'Audit'), return: t('同步返回', 'Browser return'), checkout: t('收银台', 'Checkout'), order: t('订单状态', 'Order status') })[stage?.split('.')[0]] || stage

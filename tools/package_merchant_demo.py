@@ -9,10 +9,9 @@ ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "merchant-demo"
 ARCHIVE = ROOT / "Pay_Callback_Demo.zip"
 FILES = (
-    ".env.example", ".gitignore", "app.py", "configure.py", "pay_http.py",
-    "deploy/bypay-merchant-demo.service", "deploy/nginx-test.conf",
+    ".env.example", ".gitignore", "app.py", "configuration.py", "initialize.py", "serve.py", "bootstrap.sh", "pay_http.py",
     "requirements.txt", "run.sh", "static/app.js", "static/index.html", "static/style.css",
-    "tests/test_demo.py", "tests/test_pay_http.py", "wsgi.py",
+    "tests/test_demo.py", "tests/test_pay_http.py", "tests/test_configuration.py", "wsgi.py",
 )
 
 

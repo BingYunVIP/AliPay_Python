@@ -11,7 +11,7 @@ import httpx
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-import configure
+import initialize
 from pay_http import request_json
 
 
@@ -71,17 +71,19 @@ class PayHttpTests(unittest.TestCase):
         public_key = Ed25519PrivateKey.generate().public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo).decode()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            with patch.object(configure, "ROOT", root), patch("sys.argv", ["configure.py"]), \
-                    patch("configure.getpass.getpass", side_effect=["byp_" + "x" * 43, "Demo-password-for-tests", "Demo-password-for-tests"]), \
-                    patch("configure.os.chown") as chown, patch("builtins.print"), \
+            with patch.object(initialize, "ROOT", root), patch.dict(os.environ, {}, clear=True), \
+                    patch("builtins.print"), \
                     self.mock_client(lambda _: httpx.Response(200, json={"algorithm": "Ed25519", "public_key": public_key})):
-                configure.main()
+                initialize.main()
             env = (root / ".env").read_text()
             self.assertIn(str(root / "data/demo.sqlite3"), env)
+            self.assertIn("http://127.0.0.1:888", env)
+            self.assertIn("http://127.0.0.1:8100", env)
             self.assertIn(str(root / "secrets/bypay-public.pem"), env)
             self.assertEqual((root / "secrets/bypay-public.pem").read_text(), public_key)
             self.assertEqual((root / ".env").stat().st_mode & 0o777, 0o600)
-            chown.assert_not_called()
+            self.assertNotIn("DEMO_PASSWORD", env)
+            self.assertNotIn("DEMO_USER", env)
 
     def test_merchant_does_not_load_parent_pay_env(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):

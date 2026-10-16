@@ -33,7 +33,7 @@ class PaymentTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         logger.configure(self.root / "legacy-logs", console=False)
-        self.app = create_app({"TESTING": True, "PUBLIC_BASE_URL": "https://pay.example.test",
+        self.app = create_app({"TESTING": True, "PUBLIC_BASE_URL": "https://pay.example.test", "TEST_MAX_AMOUNT": "10.00",
                                "DATABASE": str(self.root / "pay.sqlite3"), "ALIPAY_APP_ID": "2026000000000000",
                                "ALIPAY_SELLER_ID": "2088000000000000", "ALIPAY_PRIVATE_KEY": self.private,
                                "ALIPAY_PUBLIC_KEY": self.public, "BYPAY_ADMIN_EMAIL": "admin@example.test",
@@ -99,7 +99,7 @@ class PaymentTests(unittest.TestCase):
             with self.subTest(amount=amount):
                 self.assertEqual(self.create(amount=amount).status_code, 400)
         self.assertEqual(self.create(channel="wechat").status_code, 422)
-        self.assertEqual(self.create(product="mini").status_code, 422)
+        self.assertEqual(self.create(product="unknown").status_code, 422)
         self.assertEqual(self.create(return_url="https://evil.example").status_code, 400)
 
     def test_verified_callback_and_duplicates_are_idempotent(self):
@@ -206,7 +206,9 @@ class PaymentTests(unittest.TestCase):
             response = self.client.post("/api/v1/payments/TEST_ORDER_0001/sync", headers=self.headers)
         self.assertEqual(response.status_code, 502)
         self.assertEqual(self.store.order("TEST_ORDER_0001")["status"], "CREATED")
-        with patch.object(AlipayClient, "query", return_value=good):
+        # A query retry observes the same cooldown as the background worker.
+        retry_at = self.store.payment_check("TEST_ORDER_0001")["locked_until"] + 1
+        with patch("web.store.time.time", return_value=retry_at), patch.object(AlipayClient, "query", return_value=good):
             response = self.client.post("/api/v1/payments/TEST_ORDER_0001/sync", headers=self.headers)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json["order"]["status"], "PAID")

@@ -1,3 +1,39 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>冰云支付 · 独立商户测试站</title><link rel="stylesheet" href="/static/style.css"><script defer src="/static/app.js"></script></head>
-<body><main><header><a href="https://pay.bingyun.vip" target="_blank" rel="noopener noreferrer">冰云支付 <span>Pay ↗</span></a><span class="tag">独立商户测试站</span></header><section class="intro"><span class="eyebrow">MERCHANT INTEGRATION TEST</span><h1>下单、付款、回调。<br><span>把一笔交易走完整。</span></h1><p>这里模拟接入冰云支付的商户，独立保存订单与回调记录。</p><div class="flow">测试站下单 <b>→</b> Pay <b>→</b> 支付宝 <b>→</b> Pay 验签 <b>→</b> 测试站接收回调</div></section><div class="columns"><section class="panel"><h2>创建测试订单</h2><p class="hint">创建链接不会扣款；打开收银台付款后才会产生真实交易。</p><form id="create-form"><label for="amount">订单金额（元）</label><input id="amount" name="amount" value="0.01" inputmode="decimal" pattern="[0-9]+(\.[0-9]{1,2})?" required><label for="product">支付方式</label><select id="product"><option value="page">支付宝 · 网页支付</option><option value="wap">支付宝 · 手机支付</option></select><button id="submit" type="submit">创建订单并获取支付链接 →</button></form><p id="message" role="status"></p><dl><dt>请求发送到</dt><dd id="pay-origin">—</dd><dt>本测试站接收业务回调</dt><dd id="callback-url">—</dd><dt>支付宝通知由 Pay 接收</dt><dd>https://pay.bingyun.vip/alipay/notify</dd></dl><p id="config-status" class="hint"></p></section><section class="panel"><div class="panel-head"><h2>测试订单</h2><button id="refresh" class="secondary">刷新</button></div><div id="orders" class="orders"><p class="empty">正在读取…</p></div></section></div><section class="panel logs-panel"><h2>事件日志</h2><p class="hint">每 5 秒刷新本地记录。展开日志查看 API 返回及通过验签的回调内容。</p><div id="logs"></div></section><footer>test.bingyun.vip · 独立运行，不共享 Pay 的代码、数据库或支付宝密钥。</footer></main></body></html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>冰云支付 · 本地联调</title>
+  <link rel="stylesheet" href="/static/style.css"><script defer src="/static/app.js"></script>
+</head>
+<body><main>
+  <header><a id="pay-home" href="http://127.0.0.1:888" target="_blank" rel="noopener noreferrer">冰云支付 <span>Pay ↗</span></a><span class="tag" id="site-mode">支付测试</span></header>
+  <section class="intro"><h1>支付联调</h1><p>连接 Pay，创建订单并查看回调</p></section>
+  <section class="panel configuration-panel" id="configuration">
+    <div class="panel-head"><h2>连接配置</h2><span id="connection-state" class="connection-state">正在读取</span></div>
+    <form id="config-form">
+      <fieldset id="config-fields">
+        <div class="config-grid">
+          <div><label for="config-pay-origin">Pay 服务地址</label><input id="config-pay-origin" type="url" required placeholder="http://127.0.0.1:888" spellcheck="false"></div>
+          <div><label for="config-demo-origin">测试站地址</label><input id="config-demo-origin" type="url" required placeholder="http://127.0.0.1:8100" spellcheck="false" aria-describedby="callback-hint"></div>
+        </div>
+        <p class="hint" id="callback-hint">Pay 将支付结果发送到测试站的 /notify</p>
+        <label for="config-api-key">Pay API Key <span id="key-hint"></span></label>
+        <div class="secret-input"><input id="config-api-key" type="password" autocomplete="off" spellcheck="false" maxlength="204" placeholder="粘贴 Pay 控制台生成的 byp_ 开头密钥" aria-describedby="key-help"><button id="toggle-key" type="button" class="secondary" aria-label="显示 API Key" aria-pressed="false">显示</button></div>
+        <p class="hint" id="key-help">留空保留已保存的密钥 · <a id="key-console" href="http://127.0.0.1:888/dashboard?tab=keys" target="_blank" rel="noopener noreferrer">在 Pay 控制台获取 API Key ↗</a></p>
+        <div class="config-actions"><button id="save-config" type="submit">验证并保存</button><button id="check-config" type="button" class="secondary">测试连接</button><button id="local-config" type="button" class="text-button">使用本地地址</button></div>
+      </fieldset>
+    </form>
+    <p id="config-message" class="form-message" role="status" aria-live="polite"></p>
+  </section>
+  <div class="columns">
+    <section class="panel">
+      <h2>创建测试订单</h2>
+      <form id="create-form"><label for="amount">订单金额（元）</label><input id="amount" name="amount" value="0.01" inputmode="decimal" pattern="[0-9]+(\.[0-9]{1,2})?" required><label for="product">支付方式</label><select id="product"><option value="page">支付宝 · 网页支付</option><option value="wap">支付宝 · 手机支付</option></select><button id="submit" type="submit" disabled>创建订单并获取支付链接 →</button></form>
+      <p id="message" class="form-message" role="status"></p>
+      <dl><dt>当前 Pay 地址</dt><dd id="pay-origin">—</dd><dt>Pay 向测试站发送业务回调</dt><dd id="callback-url">—</dd></dl>
+      <p id="config-status" class="hint"></p>
+    </section>
+    <section class="panel"><div class="panel-head"><h2>测试订单</h2><button id="refresh" class="secondary">刷新</button></div><div id="orders" class="orders"><p class="empty">正在读取</p></div></section>
+  </div>
+  <section class="panel logs-panel"><h2>事件日志</h2><p class="hint">自动更新下单、配置验证和回调记录</p><div id="logs"></div></section>
+</main></body></html>

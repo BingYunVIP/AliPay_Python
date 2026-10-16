@@ -1,7 +1,4 @@
-from dotenv import load_dotenv
-
-load_dotenv()
-
 from .app import create_app
+from .runtime import load_runtime
 
-app = create_app()
+app = create_app(load_runtime())

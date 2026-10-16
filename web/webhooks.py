@@ -13,10 +13,21 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
-def validate_callback(url, allowed_hosts):
+def local_callback_origins(site_origin, port=8100):
+    parsed = urlsplit(site_origin)
+    if parsed.scheme != "http" or parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
+        return set()
+    return {f"http://{host}:{int(port)}" for host in ("127.0.0.1", "localhost", "[::1]")}
+
+
+def validate_callback(url, allowed_hosts, local_origins=()):
     if not isinstance(url, str) or len(url) > 2048 or any(ord(c) < 33 for c in url):
         raise ValueError("invalid_merchant_callback")
     parsed = urlsplit(url)
+    if (parsed.scheme == "http" and f"http://{parsed.netloc}" in local_origins
+            and parsed.hostname in {"127.0.0.1", "localhost", "::1"} and parsed.path == "/notify"
+            and not parsed.username and not parsed.password and not parsed.fragment and not parsed.query):
+        return parsed
     if (parsed.scheme != "https" or parsed.hostname not in allowed_hosts or parsed.username or
             parsed.password or parsed.fragment or parsed.query or parsed.port not in {None, 443}):
         raise ValueError("invalid_merchant_callback")
@@ -58,14 +69,25 @@ class WebhookSigner:
                 "X-ByPay-Event-Id": event_id}
 
 
-def send_to_merchant(url, body, headers, allowed_hosts):
-    parsed = validate_callback(url, allowed_hosts)
+def send_to_merchant(url, body, headers, allowed_hosts, timeout=10, local_origins=()):
+    parsed = validate_callback(url, allowed_hosts, local_origins)
+    if parsed.scheme == "http":
+        # A local Pay instance can reach only the demo's explicit /notify endpoint
+        # Pin localhost to a literal loopback address; no external DNS lookup
+        host = "::1" if parsed.hostname == "::1" else "127.0.0.1"
+        connection = http.client.HTTPConnection(host, port=parsed.port, timeout=timeout)
+        try:
+            connection.request("POST", "/notify", body=body, headers=headers)
+            response = connection.getresponse()
+            return response.status == 200 and response.read(1024).strip() == b"success", response.status
+        finally:
+            connection.close()
     addresses = sorted({row[4][0] for row in socket.getaddrinfo(parsed.hostname, 443, type=socket.SOCK_STREAM)})
     if not addresses or any(not ipaddress.ip_address(ip).is_global for ip in addresses):
         raise ValueError("callback_address_blocked")
     # Pin this validated IP while retaining TLS hostname verification (no DNS rebinding or redirects).
-    connection = http.client.HTTPSConnection(parsed.hostname, timeout=8, context=ssl.create_default_context())
-    raw_socket = socket.create_connection((addresses[0], 443), timeout=5)
+    connection = http.client.HTTPSConnection(parsed.hostname, timeout=timeout, context=ssl.create_default_context())
+    raw_socket = socket.create_connection((addresses[0], 443), timeout=timeout)
     try:
         connection.sock = ssl.create_default_context().wrap_socket(raw_socket, server_hostname=parsed.hostname)
         connection.request("POST", parsed.path or "/", body=body, headers=headers)
@@ -77,14 +99,18 @@ def send_to_merchant(url, body, headers, allowed_hosts):
         connection.close()
 
 
-def deliver_one(store, signer, trace, allowed_hosts, sender=send_to_merchant):
+def deliver_one(store, signer, trace, allowed_hosts, sender=None, local_origins=()):
     job = store.claim_delivery()
     if not job:
         return False
     error, http_status = "", None
     try:
         body = job["payload"].encode()
-        success, http_status = sender(job["url"], body, signer.headers(body, job["id"]), allowed_hosts)
+        headers = signer.headers(body, job["id"])
+        if sender is None:
+            success, http_status = send_to_merchant(job["url"], body, headers, allowed_hosts, timeout=store.policy()["callback_timeout_seconds"], local_origins=local_origins)
+        else:
+            success, http_status = sender(job["url"], body, headers, allowed_hosts)
         if not success:
             error = "merchant_did_not_acknowledge"
     except Exception as exc:

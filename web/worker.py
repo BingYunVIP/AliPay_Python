@@ -16,10 +16,13 @@ signal.signal(signal.SIGTERM, stop)
 signal.signal(signal.SIGINT, stop)
 while running:
     try:
+        app.extensions["store"].heartbeat("callbacks")
         has_job = deliver_one(app.extensions["store"], app.extensions["webhook_signer"],
-                              app.extensions["trace"], app.extensions["callback_hosts"])
+                              app.extensions["trace"], app.extensions["callback_hosts"], local_origins=app.extensions["callback_local_origins"])
+        has_job = app.extensions["reconciler"].tick() or has_job
+        has_job = app.extensions["refunds"].tick() or has_job
     except Exception as exc:
-        app.logger.error("Callback worker error: %s", type(exc).__name__)
+        app.logger.error("Payment worker error: %s", type(exc).__name__)
         has_job = False
     if not has_job:
         time.sleep(3)

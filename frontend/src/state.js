@@ -32,7 +32,9 @@ export async function api(path, options = {}) {
   const data = await response.json().catch(() => ({}))
   if (!response.ok) {
     if (response.status === 401) { auth.user = null; auth.csrf = ''; auth.key = null }
-    throw new ApiError(data.error || 'request_failed', response.status)
+    const error = new ApiError(data.error || 'request_failed', response.status)
+    error.field = data.field
+    throw error
   }
   return data
 }
@@ -55,15 +57,45 @@ export const errors = {
   payment_not_configured: ['支付宝尚未配置完成，请由管理员检查回调配置。', 'Alipay is not configured. Ask the administrator to check setup.'],
   payment_provider_error: ['支付宝接口返回异常，请查看事件日志并核对配置。', 'Alipay returned an error. Review the event log and configuration.'],
   payment_mismatch: ['交易信息核对失败，订单未更新，请检查日志。', 'Payment details do not match. The order was not updated.'],
+  payment_result_expired: ['支付结果链接已失效，请登录查看订单', 'This receipt link expired — sign in to view your order'],
+  payment_response_signature_invalid: ['支付宝返回结果验签失败，请管理员检查支付宝公钥', 'Alipay response signature failed — check the Alipay public key'],
+  payment_request_signature_invalid: ['支付宝请求签名不匹配，请管理员核对 APPID 和应用密钥', 'Alipay request signature failed — check the App ID and app keys'],
+  payment_app_id_invalid: ['支付宝 APPID 不正确，请管理员核对渠道配置', 'The Alipay App ID is invalid — check the channel configuration'],
   invalid_amount: ['金额须为大于 0、最多两位小数的数字。', 'Enter a positive amount with at most two decimal places.'],
   test_amount_exceeded: ['金额超过当前测试上限。', 'Amount exceeds the current test limit.'],
   order_conflict: ['该订单号已被使用，请创建新订单。', 'This order number is already in use. Create a new order.'],
   unauthorized: ['登录已过期，请重新登录。', 'Your session expired. Please sign in again.'],
   invalid_csrf: ['登录状态已更新，请刷新页面重试。', 'Please reload the page and try again.'],
-  invalid_origin: ['网站域名与服务器配置不一致，请检查 PUBLIC_BASE_URL。', 'The site domain differs from PUBLIC_BASE_URL.'],
+  invalid_origin: ['当前页面地址与启动地址不一致，请使用启动脚本显示的访问地址', 'Open the site URL shown by the startup script'],
   unsupported_product: ['此渠道或产品暂未开放。', 'This payment product is not available yet.'],
+  channel_disabled: ['支付宝新订单已暂停接收，请联系管理员。', 'Alipay is paused for new orders. Contact your administrator.'],
+  user_disabled: ['此账户已停用，请联系管理员。', 'This account is disabled. Contact your administrator.'],
+  callback_not_retryable: ['此回调已送达或正在投递，请刷新后查看。', 'This callback was delivered or is in progress. Refresh to check its status.'],
+  export_limit_exceeded: ['最多导出 10,000 笔订单，请缩小筛选范围。', 'Limit your filters to 10,000 orders before exporting.'],
+  cashier_qr_unavailable: ['未能获取支付宝收银台二维码，请重试或打开收银台', 'Unable to load the Alipay QR — retry or open checkout'],
+  order_not_refundable: ['仅已支付且有可退金额的订单支持退款', 'Only paid orders with a refundable balance can be refunded'],
+  refund_exceeds_remaining: ['退款金额超过该订单剩余可退金额', 'Refund exceeds the remaining refundable amount'],
+  refund_conflict: ['退款请求号已被使用，请核对原退款请求', 'This refund ID belongs to another request'],
+  refund_provider_error: ['支付宝未确认退款成功，请查看退款日志', 'Alipay did not confirm this refund — check the log'],
+  refund_in_progress: ['退款正在处理中，请待结果确认后操作', 'Wait for the pending refund to be confirmed'],
+  invalid_refund_reason: ['请填写退款原因，最多 128 个字符', 'Enter a refund reason of up to 128 characters'],
+  invalid_settings: ['配置内容不正确，请检查后重试。', 'Check the configuration values and try again.'],
+  settings_conflict: ['设置已在其他页面更新，请重新载入后再保存', 'Settings changed in another page — reload before saving'],
+  buyer_identity_required: ['请填写付款用户的 OpenID 或支付宝 UID', 'Enter the payer OpenID or Alipay UID'],
+  invalid_buyer_identity: ['付款用户标识格式不正确', 'The payer identifier format is invalid'],
+  payment_product_unavailable: ['当前支付宝应用尚未开通此产品，请检查开放平台的产品签约', 'This Alipay app has not enabled this product — check its subscriptions'],
+  payment_creation_pending: ['订单正在创建，请稍后使用同一订单重试', 'Order creation is in progress — retry the same order shortly'],
+  payment_order_expired: ['订单已结束或超过有效期，请查询状态后重新下单', 'This order ended or expired — check its status before creating a new one'],
+  qr_not_available: ['此订单暂不能生成二维码，请使用对应的支付入口', 'A QR code is unavailable — use the payment entry for this order'],
+  admin_protected: ['唯一管理员账户不能停用。', 'The administrator account cannot be disabled.'],
+  invalid_channel_field: ['格式不正确，请检查后重新保存', 'Invalid format; check the value and save again'],
+  invalid_channel_key: ['密钥格式不正确，需要 2048 位或更高的 RSA 密钥', 'Use a valid RSA key of at least 2048 bits'],
+  invalid_channel_config: ['渠道参数不正确，请刷新配置后重试', 'Reload the channel configuration and try again'],
+  channel_config_conflict: ['配置已被更新，请关闭后重新打开编辑窗口', 'Configuration changed; close and reopen the editor'],
+  channel_config_locked: ['无法读取加密配置，请检查服务器渠道主密钥文件', 'Unable to decrypt channel configuration; check the server master key'],
+  alipay_public_key_is_app_key: ['这里填成了应用公钥，请改填支付宝提供的公钥', 'This is your app public key; use the public key supplied by Alipay'],
 }
-export const errorText = (error) => t(...(errors[error.message] || ['操作未完成，请稍后重试。', 'The request could not be completed. Please retry.']))
+export const errorText = (error) => t(...(errors[error.message] || ['操作未完成，请稍后重试', 'The request could not be completed — please retry'])).replace(/[。！？.!?]+$/u, '')
 export async function copyText(value) {
   await navigator.clipboard.writeText(value)
 }

@@ -1,10 +1,11 @@
 <script setup>
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { auth, dark, locale, t } from './state'
 import Icon from './components/Icon.vue'
 import Brand from './components/Brand.vue'
 const route = useRoute()
+const consoleRoute = computed(() => route.path.startsWith('/dashboard'))
 const menuOpen = ref(false)
 watch(() => route.path, () => { menuOpen.value = false })
 const links = [
@@ -17,9 +18,9 @@ const links = [
 ]
 </script>
 <template>
-  <div class="byh">
+  <div :class="consoleRoute ? 'console-root' : 'byh'">
     <a class="skip-link" href="#main-content">{{ t('跳转到主要内容', 'Skip to content') }}</a>
-    <header class="byh-nav">
+    <header v-if="!consoleRoute" class="byh-nav">
       <div class="byh-nav-in">
         <RouterLink to="/" class="byh-brand" :aria-label="t('冰云支付首页', 'Pay home')"><Brand name="bingyun" /><span>{{ t('冰云支付', 'Pay') }}</span></RouterLink>
         <nav class="byh-links" :aria-label="t('冰云站点导航', 'BingYun navigation')">
@@ -40,6 +41,6 @@ const links = [
       </nav>
     </header>
     <main id="main-content"><RouterView /></main>
-    <footer class="byh-footer byh-wrap"><div class="footer-brand"><Brand name="bingyun" /><span>{{ t('冰云支付', 'Pay') }}</span><span class="footer-separator">/</span><span class="muted">{{ t('连接生意，也连接信任。', 'Connecting payments. Building trust.') }}</span></div><span class="copyright">© {{ new Date().getFullYear() }} BingYun</span><a href="/fonts/LICENSE_Fonts.txt" target="_blank" rel="noopener noreferrer" :aria-label="t('HarmonyOS Sans 字体许可', 'HarmonyOS Sans font license')">HarmonyOS Sans</a><a href="mailto:support@bingyun.vip">{{ t('联系支持', 'Contact support') }}<Icon name="external" :size="14" /></a></footer>
+
   </div>
 </template>
