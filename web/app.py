@@ -91,6 +91,9 @@ def create_app(settings=None):
     callback_local = LocalProxy(lambda: local_callback_origins(site.read()["origin"], app.config.get("BYPAY_LOCAL_CALLBACK_PORT", 8100)))
     store.bootstrap(app.config.get("BYPAY_ADMIN_EMAIL"), app.config.get("BYPAY_ADMIN_PASSWORD"))
     app.extensions.update(store=store, alipay_config=base_cfg, channels=channels, site_settings=site, webhook_signer=signer, trace=trace, callback_hosts=callback_hosts, callback_local_origins=callback_local)
+    from .merchants import Merchants
+    merchants = Merchants(store, site)
+    app.extensions["merchants"] = merchants
     secure = app.config["PUBLIC_BASE_URL"].startswith("https://")
     cookie_name = "__Host-bypay_session" if secure else "bypay_session"
     origin = app.config["PUBLIC_BASE_URL"].rstrip("/")
@@ -185,7 +188,11 @@ def create_app(settings=None):
         response.headers.update({"X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY",
                                  "Referrer-Policy": "no-referrer", "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
                                  "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src https://openapi.alipay.com https://unitradeprod.alipay.com https://excashier.alipay.com https://openapi-sandbox.dl.alipaydev.com https://excashier-sandbox.dl.alipaydev.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"})
-        if request.path.startswith(("/api/", "/alipay/")):
+        if getattr(g, 'cashier_parent', None):
+            response.headers.pop('X-Frame-Options', None)
+            response.headers['Content-Security-Policy'] = response.headers['Content-Security-Policy'].replace("frame-ancestors 'none'", "frame-ancestors 'self' " + g.cashier_parent)
+            response.headers['Cache-Control'] = 'no-store'
+        if request.path.startswith(("/api/", "/alipay/")) or request.path.endswith('.php'):
             response.headers["Cache-Control"] = "no-store"
         if secure:
             response.headers["Strict-Transport-Security"] = "max-age=31536000"
@@ -265,6 +272,7 @@ def create_app(settings=None):
                 raise ApiError("password_too_short")
             try:
                 user = store.register(email, password)
+                merchants.ensure(user["id"])
             except sqlite3.IntegrityError:
                 raise ApiError("email_unavailable", 409)
         else:
@@ -367,9 +375,11 @@ def create_app(settings=None):
     @app.post("/api/v1/payments/<number>/prepare-qr")
     @auth()
     def prepare_qr(number):
+        return prepare_qr_request(number, json_body() if request.content_length else {})
+
+    def prepare_qr_request(number, payload):
         from .cashier import fetch_cashier_qr
         order = owned_order(number)
-        payload = json_body() if request.content_length else {}
         if set(payload) - {"refresh", "native"} or any(type(payload[k]) is not bool for k in payload): raise ApiError("invalid_json")
         if order["cashier_qr"] and not payload.get("refresh") and not payload.get("native"): return jsonify(order=public_order(order))
         if order["product"] != "page" or order["status"] != "CREATED" or order["expires_at"] <= int(time.time()): raise ApiError("qr_not_available", 422)
@@ -411,7 +421,9 @@ def create_app(settings=None):
     @app.post("/api/v1/payments")
     @auth()
     def create_payment():
-        payload = json_body()
+        return create_payment_request(json_body())
+
+    def create_payment_request(payload):
         number, subject = payload.get("out_trade_no"), payload.get("subject")
         if not isinstance(number, str) or not re.fullmatch(r"[A-Za-z0-9_-]{6,64}", number):
             raise ApiError("invalid_order_number")
@@ -663,11 +675,18 @@ def create_app(settings=None):
         candidate = (dist / path).resolve()
         if path and candidate.is_relative_to(dist) and candidate.is_file():
             return send_from_directory(dist, path)
-        if path not in {"", "login", "register", "dashboard", "payment-return"}:
+        if path.startswith("cashier/"):
+            value = merchants.cashier(path.removeprefix("cashier/"))
+            if not value: raise ApiError("cashier_not_found",404)
+            from .epay import frame_origins
+            g.cashier_parent = " ".join(frame_origins(value[1]["notify_url"]))
+        elif path not in {"", "login", "register", "dashboard", "payment-return"}:
             raise ApiError("not_found", 404)
         if not (dist / "index.html").exists():
             raise ApiError("frontend_not_built", 503)
         return send_from_directory(dist, "index.html")
 
+    from .epay import install_epay
+    install_epay(app, merchants, auth, trace, create_payment_request, prepare_qr_request, ApiError)
     install_console(app, store, auth, trace, cfg, ready, ApiError)
     return app

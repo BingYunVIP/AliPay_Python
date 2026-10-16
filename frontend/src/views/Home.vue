@@ -26,16 +26,13 @@ const channels = [
   { key: 'stripe', zh: 'Stripe', en: 'Stripe', detail: 'Global payments', color: '#9c8aff' },
 ]
 const code = computed(() => [
-  { text: `curl -X POST '${origin}/api/v1/payments' \\`, type: 'command' },
-  { text: '  -H "Authorization: Bearer $BYPAY_API_KEY" \\', type: 'header' },
-  { text: '  -H "Content-Type: application/json" \\', type: 'header' },
-  { text: "  -d '{", type: 'body' },
-  { text: '    "out_trade_no": "PAY_DEMO_20261015_001",', type: 'body' },
-  { text: `    "subject": "${t('冰云支付测试订单', 'BingYun Pay test order')}",`, type: 'body' },
-  { text: '    "amount": "0.01",', type: 'body' },
-  { text: '    "channel": "alipay",', type: 'body' },
-  { text: `    "product": "${product.value}"`, type: 'body' },
-  { text: "  }'", type: 'body' },
+  { text: 'PID="1000"; KEY="$MERCHANT_MD5_KEY"', type: 'header' },
+  { text: 'N="demo_$(date +%s)"', type: 'header' },
+  { text: 'URL="https://test.bingyun.vip/notify"', type: 'header' },
+  { text: 'DATA="clientip=127.0.0.1&money=0.01&name=ByPay&notify_url=${URL}&out_trade_no=${N}&pid=${PID}&type=alipay"', type: 'body' },
+  { text: 'SIGN=$(printf "%s" "${DATA}${KEY}" | openssl dgst -md5 -r | cut -d " " -f1)', type: 'body' },
+  { text: `curl '${origin}/mapi.php' \\`, type: 'command' },
+  { text: '  --data "${DATA}&sign_type=MD5&sign=${SIGN}"', type: 'body' },
 ])
 async function copy() {
   try { await copyText(code.value.map(l => l.text).join('\n')); copied.value = true; copyFailed.value = false }

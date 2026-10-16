@@ -187,10 +187,10 @@ def install_console(app, store, auth, trace, cfg, ready, ApiError):
         where, args = ("instr(u.email,?)>0", [search]) if search else ("1=1", [])
         with store.connect() as db:
             total = db.execute(f"SELECT COUNT(*) FROM users u WHERE {where}", args).fetchone()[0]
-            rows = db.execute(f"""SELECT u.id,u.email,u.role,u.disabled,u.created_at,k.suffix,
+            rows = db.execute(f"""SELECT u.id,u.email,u.role,u.disabled,u.created_at,k.suffix,m.pid merchant_id,m.mode signature_mode,
                 (SELECT COUNT(*) FROM orders o WHERE o.user_id=u.id) order_count,
                 (SELECT COALESCE(SUM(CAST(ROUND(CAST(amount AS NUMERIC)*100) AS INTEGER)),0) FROM orders o WHERE o.user_id=u.id AND o.paid_at IS NOT NULL) revenue_cents
-                FROM users u LEFT JOIN api_keys k ON k.user_id=u.id WHERE {where} ORDER BY u.id LIMIT ? OFFSET ?""", [*args, size, (page - 1) * size]).fetchall()
+                FROM users u LEFT JOIN api_keys k ON k.user_id=u.id LEFT JOIN merchant_accounts m ON m.user_id=u.id WHERE {where} ORDER BY u.id LIMIT ? OFFSET ?""", [*args, size, (page - 1) * size]).fetchall()
         return jsonify(users=[dict(row) for row in rows], total=total, page=page, page_size=size)
 
     @app.post("/api/admin/users")
@@ -203,6 +203,7 @@ def install_console(app, store, auth, trace, cfg, ready, ApiError):
         if not isinstance(password, str) or not 12 <= len(password) <= 128: raise ApiError("password_too_short")
         try: user = store.register(email.strip().lower(), password)
         except sqlite3.IntegrityError: raise ApiError("email_unavailable", 409)
+        app.extensions["merchants"].ensure(user["id"])
         trace("console.user", "user_created", {"target_user_id": user["id"]}, user_id=g.user["id"])
         return jsonify(user=user), 201
 

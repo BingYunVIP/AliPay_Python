@@ -17,7 +17,7 @@ export function useConsole() {
     ...(isAdmin.value ? [{ id: 'users', label: t('用户管理', 'Users'), icon: 'users', group: 'system' },
       { id: 'settings', label: t('系统管理', 'Settings'), icon: 'settings', group: 'system' }] : []),
     { id: 'logs', label: t('系统日志', 'Event log'), icon: 'shield', group: 'system' },
-    { id: 'keys', label: t('API 密钥', 'API keys'), icon: 'key', group: 'account' },
+    { id: 'keys', label: t('接口配置', 'Merchant API'), icon: 'key', group: 'account' },
   ])
   const tab = computed(() => menus.value.some(m => m.id === route.query.tab) ? route.query.tab : 'overview')
   const current = computed(() => menus.value.find(m => m.id === tab.value))

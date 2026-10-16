@@ -7,7 +7,7 @@ import socket
 import ssl
 import time
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlencode
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -69,15 +69,18 @@ class WebhookSigner:
                 "X-ByPay-Event-Id": event_id}
 
 
-def send_to_merchant(url, body, headers, allowed_hosts, timeout=10, local_origins=()):
+def send_to_merchant(url, body, headers, allowed_hosts, timeout=10, local_origins=(), method="POST"):
     parsed = validate_callback(url, allowed_hosts, local_origins)
+    target = (parsed.path or "/") + ("?" + body.decode("ascii") if method == "GET" else "")
+    content = None if method == "GET" else body
+    if method not in {"POST", "GET"}: raise ValueError("invalid_callback_method")
     if parsed.scheme == "http":
         # A local Pay instance can reach only the demo's explicit /notify endpoint
         # Pin localhost to a literal loopback address; no external DNS lookup
         host = "::1" if parsed.hostname == "::1" else "127.0.0.1"
         connection = http.client.HTTPConnection(host, port=parsed.port, timeout=timeout)
         try:
-            connection.request("POST", "/notify", body=body, headers=headers)
+            connection.request(method, target, body=content, headers=headers)
             response = connection.getresponse()
             return response.status == 200 and response.read(1024).strip() == b"success", response.status
         finally:
@@ -90,7 +93,7 @@ def send_to_merchant(url, body, headers, allowed_hosts, timeout=10, local_origin
     raw_socket = socket.create_connection((addresses[0], 443), timeout=timeout)
     try:
         connection.sock = ssl.create_default_context().wrap_socket(raw_socket, server_hostname=parsed.hostname)
-        connection.request("POST", parsed.path or "/", body=body, headers=headers)
+        connection.request(method, target, body=content, headers=headers)
         response = connection.getresponse()
         response_body = response.read(1024)
         return response.status == 200 and response_body.strip() == b"success", response.status
@@ -107,8 +110,14 @@ def deliver_one(store, signer, trace, allowed_hosts, sender=None, local_origins=
     try:
         body = job["payload"].encode()
         headers = signer.headers(body, job["id"])
+        method = "POST"
+        merchants = getattr(store, "merchants", None)
+        if merchants and merchants.order(job["out_trade_no"]):
+            body = urlencode(merchants.notification(job["out_trade_no"])).encode('ascii')
+            headers = {"Accept":"text/plain", "X-ByPay-Event-Id":job["id"]}
+            method = "GET"
         if sender is None:
-            success, http_status = send_to_merchant(job["url"], body, headers, allowed_hosts, timeout=store.policy()["callback_timeout_seconds"], local_origins=local_origins)
+            success, http_status = send_to_merchant(job["url"], body, headers, allowed_hosts, timeout=store.policy()["callback_timeout_seconds"], local_origins=local_origins, method=method)
         else:
             success, http_status = sender(job["url"], body, headers, allowed_hosts)
         if not success:

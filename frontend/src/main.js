@@ -14,6 +14,7 @@ const router = createRouter({
     { path: '/login', component: () => import('./views/Auth.vue') },
     { path: '/register', component: () => import('./views/Auth.vue') },
     { path: '/dashboard', component: () => import('./views/Dashboard.vue'), meta: { auth: true } },
+    { path: '/cashier/:token', component: () => import('./views/Cashier.vue') },
     { path: '/payment-return', component: () => import('./views/PaymentReturn.vue') },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],

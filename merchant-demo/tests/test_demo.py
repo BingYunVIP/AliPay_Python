@@ -1,114 +1,91 @@
 import base64
+import time
 import json
 import sqlite3
-import tempfile
-import time
 import unittest
 from contextlib import closing
-from pathlib import Path
-from unittest.mock import patch
-
-import httpx
-
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-
-from app import create_app
+from fixtures import MerchantFixture
 
 
-class MerchantTests(unittest.TestCase):
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        root = Path(self.temp.name)
-        self.key = Ed25519PrivateKey.generate()
-        public_file = root / "public.pem"
-        public_file.write_bytes(self.key.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo))
-        self.db = root / "merchant.sqlite3"
-        self.app = create_app({"TESTING": True, "PAY_ORIGIN":"https://pay.bingyun.vip", "DEMO_ORIGIN":"https://test.bingyun.vip", "DATABASE": str(self.db), "PAY_PUBLIC_KEY_FILE": str(public_file), "PAY_API_KEY": "byp_test_placeholder"})
-        self.client = self.app.test_client()
-        self.headers = {"Origin": "https://test.bingyun.vip", "X-Demo-Request": "1"}
-        with closing(sqlite3.connect(self.db)) as connection, connection:
-            connection.execute("INSERT INTO orders(number,amount,status,created_at) VALUES ('DEMO_ORDER_01','0.01','WAITING',?)", (int(time.time()),))
-        self.guard = patch("socket.create_connection", side_effect=AssertionError("Unexpected network request"))
-        self.guard.start()
-        self.addCleanup(self.guard.stop)
+class MerchantTests(MerchantFixture,unittest.TestCase):
+    def setUp(self):self.setup_merchant()
 
-    def event(self, **changes):
-        return {"id": "event_001", "event": "payment.paid", "out_trade_no": "DEMO_ORDER_01", "trade_no": "202610150000123456", "amount": "0.01", "currency": "CNY", "channel": "alipay", "status": "PAID", "paid_at": int(time.time()), **changes}
+    def test_anonymous_page_and_same_origin_protection(self):
+        with self.client.get('/') as response:self.assertEqual(response.status_code,200);self.assertNotIn('WWW-Authenticate',response.headers)
+        self.assertEqual(self.client.post('/api/orders',json={'amount':'0.01'},headers={**self.headers,'Origin':'https://evil.test'}).status_code,403)
 
-    def notify(self, event, stamp=None, corrupt=False):
-        body = json.dumps(event, separators=(",", ":")).encode()
-        stamp = str(stamp or int(time.time()))
-        signature = self.key.sign(stamp.encode() + b"." + body)
-        headers = {"X-ByPay-Timestamp": stamp, "X-ByPay-Event-Id": event["id"], "X-ByPay-Signature": "invalid" if corrupt else base64.b64encode(signature).decode()}
-        return self.client.post("/notify", data=body, content_type="application/json", headers=headers)
+    def test_v1_and_v2_create_embeddable_platform_cashier(self):
+        for version in ('v1','v2'):
+            with self.subTest(version=version):
+                order=self.create(version)
+                self.assertTrue(order['pay_url'].startswith('https://pay.bingyun.vip/cashier/'))
+                self.assertEqual(order['merchant_id'],'1000');self.assertEqual(order['api_version'],version)
+                with self.client.get('/') as page:self.assertIn('frame-src https://pay.bingyun.vip',page.headers['Content-Security-Policy'])
 
-    def status(self):
-        with closing(sqlite3.connect(self.db)) as connection, connection:
-            return connection.execute("SELECT status FROM orders WHERE number='DEMO_ORDER_01'").fetchone()[0]
+    def test_signed_callbacks_are_idempotent_for_both_versions(self):
+        for version in ('v1','v2'):
+            with self.subTest(version=version):
+                # Use an isolated fixture per protocol to avoid the fixed mock platform order ID colliding
+                if version=='v2':
+                    with closing(sqlite3.connect(self.settings['DATABASE'])) as db,db:db.execute('DELETE FROM receipts')
+                order=self.create(version);params=self.callback(order)
+                self.assertEqual(self.client.get('/notify',query_string=params).data,b'success')
+                self.assertEqual(self.client.get('/notify',query_string=params).data,b'success')
+                state=self.client.get('/api/state').json
+                self.assertEqual(next(o for o in state['orders'] if o['number']==order['number'])['status'],'PAID')
 
-    def test_open_console_and_same_origin_validation(self):
-        with self.client.get("/") as response:
-            self.assertEqual(response.status_code, 200)
-            self.assertNotIn("WWW-Authenticate", response.headers)
-        with self.client.get("/", headers=self.headers) as response:
-            self.assertEqual(response.status_code, 200)
-        self.assertEqual(self.client.get("/api/state", headers=self.headers).json["callback_url"], "https://test.bingyun.vip/notify")
-        self.assertEqual(self.client.post("/api/orders", headers={**self.headers, "Origin": "https://evil.test"}, json={"amount": "0.01"}).status_code, 403)
+    def test_forged_wrong_merchant_and_wrong_amount_never_mark_paid(self):
+        order=self.create('v2')
+        for changes in ({'money':'0.02'},{'pid':'1001'},{'type':'wxpay'},{'trade_no':'OTHER_ORDER_1234'},{'trade_status':'WAIT_BUYER_PAY'}):
+            self.assertEqual(self.client.get('/notify',query_string=self.callback(order,**changes)).status_code,400)
+        bad=self.callback(order);bad['sign']='bad'
+        self.assertEqual(self.client.get('/notify',query_string=bad).status_code,400)
+        self.assertEqual(self.client.get('/api/state').json['orders'][0]['status'],'WAITING')
 
-    def test_verified_callback_and_duplicate_are_idempotent(self):
-        event = self.event()
-        self.assertEqual(self.notify(event).data, b"success")
-        self.assertEqual(self.status(), "PAID")
-        self.assertEqual(self.notify(event).data, b"success")
-        with closing(sqlite3.connect(self.db)) as connection, connection:
-            self.assertEqual(connection.execute("SELECT count(*) FROM receipts").fetchone()[0], 1)
-            self.assertEqual(connection.execute("SELECT count(*) FROM logs WHERE stage='notify.verified'").fetchone()[0], 1)
-        records = [json.loads(line) for line in (self.db.parent / "logs/demo.jsonl").read_text().splitlines()]
-        self.assertEqual(len([row for row in records if row['stage'] == 'notify.verified']), 1)
+    def test_query_confirms_payment_only_when_signature_identity_and_amount_match(self):
+        order=self.create('v2');self.paid=True;self.wrong_amount=True
+        self.assertEqual(self.post('/api/orders/'+order['number']+'/sync',{}).status_code,502)
+        self.assertEqual(self.client.get('/api/state').json['orders'][0]['status'],'WAITING')
+        with closing(sqlite3.connect(self.settings['DATABASE'])) as db,db:db.execute('UPDATE orders SET last_query_at=0')
+        self.wrong_amount=False
+        result=self.post('/api/orders/'+order['number']+'/sync',{})
+        self.assertEqual(result.json['order']['status'],'PAID');self.assertEqual(result.json['order']['confirmed_by'],'query')
 
-    def test_direct_ip_origin_can_submit_but_other_addresses_cannot(self):
-        with patch('app.local_hosts', return_value={'127.0.0.1', '192.168.1.20'}):
-            app = create_app(dict(self.app.config))
-        client = app.test_client()
-        # Invalid amounts are rejected after origin validation, without contacting Pay
-        for origin in ('http://192.168.1.20:8100', 'http://127.0.0.1:8100'):
-            response = client.post('/api/orders', json={'amount':'0'}, headers={**self.headers,'Origin':origin})
-            self.assertEqual(response.status_code, 400)
-        for origin in ('http://192.168.1.21:8100', 'http://192.168.1.20:9999'):
-            response = client.post('/api/orders', json={'amount':'0'}, headers={**self.headers,'Origin':origin})
-            self.assertEqual(response.status_code, 403)
+    def test_key_change_does_not_break_callback_for_old_order_and_snapshots_are_encrypted(self):
+        order=self.create();self.accepted_md5='b'*32
+        self.assertEqual(self.post('/api/config',{'md5_key':self.accepted_md5}).status_code,200)
+        self.assertEqual(self.client.get('/notify',query_string=self.callback(order)).data,b'success')
+        with closing(sqlite3.connect(self.settings['DATABASE'])) as db:raw=db.execute('SELECT connection_enc FROM orders').fetchone()[0]
+        self.assertNotIn(self.md5,raw);self.assertNotIn(self.private,raw)
+        body=self.client.get('/api/state').get_data(as_text=True)
+        self.assertNotIn(self.md5,body);self.assertNotIn(self.private,body)
+        self.assertNotIn(self.md5,(self.root/'logs/demo.jsonl').read_text())
 
-    def test_bad_signature_stale_timestamp_and_bad_amount_rejected(self):
-        self.assertEqual(self.notify(self.event(), corrupt=True).status_code, 400)
-        self.assertEqual(self.notify(self.event(), stamp=int(time.time()) - 601).status_code, 400)
-        for fields in [{"amount": "0.02"}, {"amount": "NaN"}, {"currency": "USD"}, {"channel": "wechat"}, {"trade_no": None}, {"paid_at": []}, {"out_trade_no": "OTHER_ORDER"}]:
-            with self.subTest(fields=fields):
-                self.assertEqual(self.notify(self.event(**fields)).status_code, 400)
-        self.assertEqual(self.status(), "WAITING")
-
-    def test_event_id_cannot_be_reused_with_different_content(self):
-        self.notify(self.event())
-        self.assertEqual(self.notify(self.event(trade_no="202610150000654321")).status_code, 400)
-
-    def test_order_creation_sends_merchant_notify_to_pay(self):
-        received = []
-        real_client = httpx.Client
-        def upstream(request):
-            received.append(request)
-            return httpx.Response(201, json={"order": {"pay_url": "https://openapi.alipay.com/gateway.do?sign=example", "status": "CREATED", "amount": "0.01"}})
-        transport = httpx.MockTransport(upstream)
-        with patch("pay_http.httpx.Client", side_effect=lambda **kwargs: real_client(transport=transport, **kwargs)):
-            response = self.client.post("/api/orders", headers=self.headers, json={"amount": "0.01", "product": "page"})
-            self.assertEqual(response.status_code, 201)
-            request = received[0]
-            self.assertEqual(str(request.url), "https://pay.bingyun.vip/api/v1/payments")
-            self.assertEqual(json.loads(request.content)["notify_url"], "https://test.bingyun.vip/notify")
-            self.assertTrue(request.headers["User-Agent"].startswith("python-httpx/"))
-        logs = self.client.get("/api/state", headers=self.headers).json["logs"]
-        self.assertNotIn("byp_test_placeholder", json.dumps(logs))
+    def test_browser_return_does_not_confirm_payment(self):
+        self.create()
+        with self.client.get('/return?trade_status=TRADE_SUCCESS') as response:self.assertEqual(response.status_code,200)
+        self.assertEqual(self.client.get('/api/state').json['orders'][0]['status'],'WAITING')
 
 
-if __name__ == "__main__":
-    unittest.main()
+    def test_existing_ed25519_orders_can_still_receive_old_callbacks(self):
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        key=Ed25519PrivateKey.generate();path=self.root/'legacy-public.pem'
+        path.write_bytes(key.public_key().public_bytes(serialization.Encoding.PEM,serialization.PublicFormat.SubjectPublicKeyInfo))
+        self.app.config['PAY_PUBLIC_KEY_FILE']=str(path)
+        with closing(sqlite3.connect(self.settings['DATABASE'])) as db,db:
+            db.execute("INSERT INTO orders(number,amount,status,created_at) VALUES ('LEGACY_ORDER_01','0.01','WAITING',?)",(int(time.time()),))
+        data={'id':'legacy_event_01','event':'payment.paid','out_trade_no':'LEGACY_ORDER_01','trade_no':'202610160000999999','amount':'0.01','currency':'CNY','channel':'alipay','status':'PAID','paid_at':int(time.time())}
+        raw=json.dumps(data).encode();stamp=str(int(time.time()))
+        headers={'X-ByPay-Timestamp':stamp,'X-ByPay-Event-Id':data['id'],'X-ByPay-Signature':base64.b64encode(key.sign(stamp.encode()+b'.'+raw)).decode()}
+        self.assertEqual(self.client.post('/notify',data=raw,content_type='application/json',headers=headers).data,b'success')
+        self.assertEqual(self.client.post('/notify',json=[],headers=headers).status_code,400)
+
+    def test_lost_snapshot_key_is_not_silently_regenerated(self):
+        self.create()
+        key=self.root/'connection-master.key';key.unlink()
+        with self.assertRaisesRegex(ValueError,'restore_backup'):self.config.seal(self.config.read())
+        self.assertFalse(key.exists())
+
+
+if __name__=='__main__':unittest.main()

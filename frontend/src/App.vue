@@ -18,7 +18,8 @@ const links = [
 ]
 </script>
 <template>
-  <div :class="consoleRoute ? 'console-root' : 'byh'">
+  <RouterView v-if="route.path.startsWith('/cashier/')" />
+  <div v-else :class="consoleRoute ? 'console-root' : 'byh'">
     <a class="skip-link" href="#main-content">{{ t('跳转到主要内容', 'Skip to content') }}</a>
     <header v-if="!consoleRoute" class="byh-nav">
       <div class="byh-nav-in">

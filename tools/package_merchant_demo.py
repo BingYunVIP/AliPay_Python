@@ -9,10 +9,12 @@ ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "merchant-demo"
 ARCHIVE = ROOT / "Pay_Callback_Demo.zip"
 FILES = (
-    ".env.example", ".gitignore", "app.py", "configuration.py", "initialize.py", "serve.py", "bootstrap.sh", "pay_http.py",
+    ".env.example", ".gitignore", "app.py", "configuration.py", "connection.py", "epay_protocol.py", "initialize.py", "serve.py", "bootstrap.sh", "pay_http.py",
     "requirements.txt", "run.sh", "static/app.js", "static/index.html", "static/style.css",
-    "tests/test_demo.py", "tests/test_pay_http.py", "tests/test_configuration.py", "wsgi.py",
+    "tests/fixtures.py", "tests/test_demo.py", "tests/test_pay_http.py", "tests/test_configuration.py", "wsgi.py",
 )
+
+FILES += tuple('static/fonts/'+path.name for path in sorted((SOURCE/'static/fonts').glob('*')) if path.suffix=='.woff2' or path.name in {'fonts.css','LICENSE_Fonts.txt'})
 
 
 def build_archive():

@@ -11,10 +11,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from dotenv import dotenv_values, set_key
 from pay_http import request_json
+from connection import check, ConnectionError
+from epay_protocol import public_pem
+from cryptography.fernet import Fernet
+import json
+import sqlite3
+from contextlib import closing
 
 
 class ConfigurationError(ValueError):
@@ -47,7 +51,7 @@ def origin(value, *, callback=False):
     value = value.strip().rstrip('/')
     try:
         parsed = urlsplit(value)
-        valid = (parsed.hostname and not parsed.username and not parsed.password and not parsed.path
+        valid = (parsed.hostname and parsed.username is None and parsed.password is None and not parsed.path
                  and not parsed.query and not parsed.fragment and not any(ord(c) <= 32 for c in value)
                  and not any(c in value for c in '\\#?') and (parsed.port is None or 1 <= parsed.port <= 65535))
         valid = valid and (parsed.scheme == 'https' or (parsed.scheme == 'http' and parsed.hostname in local_hosts()))
@@ -58,47 +62,9 @@ def origin(value, *, callback=False):
     return f'{parsed.scheme}://{parsed.netloc.lower()}'
 
 
-def valid_public_key(pem):
-    try:
-        return isinstance(serialization.load_pem_public_key(pem.encode()), Ed25519PublicKey)
-    except (ValueError, TypeError, AttributeError):
-        return False
-
-
-def fetch_public_key(pay_origin):
-    response, status = request_json('GET', pay_origin + '/api/webhooks/public-key')
-    pem = response.get('public_key')
-    if status != 200 or response.get('algorithm') != 'Ed25519' or not valid_public_key(pem):
-        raise ConfigurationError('public_key_unavailable', 502, status, key_valid=True)
-    return pem
-
-
-def verify_key(pay_origin, api_key):
-    if not api_key:
-        raise ConfigurationError('pay_key_missing')
-    if not re.fullmatch(r'byp_[A-Za-z0-9_-]{30,200}', api_key):
-        raise ConfigurationError('invalid_api_key_format')
-    # This existing Pay endpoint authenticates BEFORE looking up the order.
-    # A random absent order proves authentication without creating an order,
-    # listing the merchant's transactions, or contacting a payment provider.
-    probe = 'DEMO_AUTH_' + secrets.token_hex(20)
-    response, status = request_json('GET', pay_origin + '/api/v1/payments/' + probe, api_key=api_key)
-    if status == 404 and response.get('error') == 'order_not_found':
-        return
-    if status == 401 and response.get('error') == 'unauthorized':
-        raise ConfigurationError('unauthorized', 422, status)
-    code = response.get('error')
-    if status == 403:
-        code = 'pay_access_denied'
-    elif status == 429:
-        code = 'rate_limited'
-    elif code not in {'pay_unreachable', 'pay_redirect_rejected', 'pay_response_too_large'}:
-        code = 'pay_validation_unavailable'
-    raise ConfigurationError(code, 502, status)
-
-
 def fingerprint(values):
-    return hashlib.sha256((values['PAY_ORIGIN'] + '\n' + values.get('PAY_API_KEY', '')).encode()).hexdigest()
+    fields = ('PAY_ORIGIN','PAY_MERCHANT_ID','PAY_API_VERSION','PAY_MD5_KEY','PAY_MERCHANT_PRIVATE_KEY','PAY_PLATFORM_PUBLIC_KEY')
+    return hashlib.sha256('\n'.join(str(values.get(k,'')) for k in fields).encode()).hexdigest()
 
 
 class Configuration:
@@ -111,11 +77,8 @@ class Configuration:
             values.update({k:v for k,v in dotenv_values(self.source, interpolate=False).items() if v is not None})
         values['PAY_ORIGIN'] = origin(values['PAY_ORIGIN'])
         values['DEMO_ORIGIN'] = origin(values['DEMO_ORIGIN'], callback=True)
-        if not values.get('PAY_PUBLIC_KEY_PEM'):
-            try:
-                values['PAY_PUBLIC_KEY_PEM'] = Path(values['PAY_PUBLIC_KEY_FILE']).read_text()
-            except OSError:
-                values['PAY_PUBLIC_KEY_PEM'] = ''
+        for key,default in {'PAY_MERCHANT_ID':'','PAY_API_VERSION':'v1','PAY_MD5_KEY':'','PAY_MERCHANT_PRIVATE_KEY':'','PAY_PLATFORM_PUBLIC_KEY':''}.items():
+            values.setdefault(key,default)
         return values
 
     @contextmanager
@@ -145,60 +108,77 @@ class Configuration:
 
     def public(self, *, editable=False):
         values = self.read()
-        state = 'missing' if not values.get('PAY_API_KEY') else 'unverified'
+        configured = bool(values['PAY_MERCHANT_ID']) and bool(values['PAY_MD5_KEY'] if values['PAY_API_VERSION']=='v1' else values['PAY_MERCHANT_PRIVATE_KEY'] and values['PAY_PLATFORM_PUBLIC_KEY'])
+        state = 'unverified' if configured else 'missing'
         checked_at = 0
         if values.get('PAY_KEY_FINGERPRINT') == fingerprint(values):
-            state = values.get('PAY_KEY_STATUS', state)
-            try:
-                checked_at = int(values.get('PAY_KEY_CHECKED_AT', 0))
-            except ValueError:
-                pass
-        return {
-            'pay_origin': values['PAY_ORIGIN'], 'demo_origin': values['DEMO_ORIGIN'],
-            'callback_url': values['DEMO_ORIGIN'] + '/notify',
-            'alipay_notify_url': values['PAY_ORIGIN'] + '/alipay/notify',
-            'key_configured': bool(values.get('PAY_API_KEY')), 'key_status': state,
-            'key_checked_at': checked_at,
-            'verification_key_configured': valid_public_key(values.get('PAY_PUBLIC_KEY_PEM')),
-            'can_manage': editable,
-            'key_hint': '•••• ' + values['PAY_API_KEY'][-4:] if editable and values.get('PAY_API_KEY') else '',
-        }
+            state = values.get('PAY_KEY_STATUS',state)
+            try: checked_at = int(values.get('PAY_KEY_CHECKED_AT',0))
+            except ValueError: pass
+        return {'pay_origin':values['PAY_ORIGIN'],'demo_origin':values['DEMO_ORIGIN'],'callback_url':values['DEMO_ORIGIN']+'/notify',
+                'merchant_id':values['PAY_MERCHANT_ID'],'api_version':values['PAY_API_VERSION'],
+                'platform_public_key':values['PAY_PLATFORM_PUBLIC_KEY'],'md5_configured':bool(values['PAY_MD5_KEY']),
+                'private_configured':bool(values['PAY_MERCHANT_PRIVATE_KEY']), 'key_configured':configured,'key_status':state,
+                'key_checked_at':checked_at,'can_manage':editable,'verification_key_configured':configured}
 
-    def candidate(self, payload, current):
-        if not isinstance(payload, dict):
-            raise ConfigurationError('invalid_request')
-        result = dict(current)
-        result['PAY_ORIGIN'] = origin(payload.get('pay_origin', current['PAY_ORIGIN']))
-        result['DEMO_ORIGIN'] = origin(payload.get('demo_origin', current['DEMO_ORIGIN']), callback=True)
-        key = payload.get('api_key', '')
-        if not isinstance(key, str):
-            raise ConfigurationError('invalid_api_key_format')
-        key = key.strip()
-        if result['PAY_ORIGIN'] != current['PAY_ORIGIN'] and not key and result['PAY_ORIGIN'].startswith('https://'):
-            raise ConfigurationError('key_required_for_new_origin')
-        result['PAY_API_KEY'] = key or current.get('PAY_API_KEY', '')
+    def candidate(self,payload,current):
+        if not isinstance(payload,dict): raise ConfigurationError('invalid_request')
+        result=dict(current)
+        result['PAY_ORIGIN']=origin(payload.get('pay_origin',current['PAY_ORIGIN']))
+        result['DEMO_ORIGIN']=origin(payload.get('demo_origin',current['DEMO_ORIGIN']),callback=True)
+        mapping={'merchant_id':'PAY_MERCHANT_ID','api_version':'PAY_API_VERSION','md5_key':'PAY_MD5_KEY',
+                 'merchant_private_key':'PAY_MERCHANT_PRIVATE_KEY','platform_public_key':'PAY_PLATFORM_PUBLIC_KEY'}
+        for field,key in mapping.items():
+            value=payload.get(field)
+            if value is None: continue
+            if not isinstance(value,str): raise ConfigurationError('invalid_request')
+            value=value.strip()
+            if value or field not in {'md5_key','merchant_private_key'}:result[key]=value
+        if result['PAY_API_VERSION'] not in {'v1','v2'}: raise ConfigurationError('invalid_api_version')
         return result
 
-    def mark_key(self, used, state):
+    def mark_key(self,used,state):
         with self.locked():
-            if fingerprint(used) == fingerprint(self.read()):
-                self.write({'PAY_KEY_STATUS':state, 'PAY_KEY_CHECKED_AT':int(time.time()), 'PAY_KEY_FINGERPRINT':fingerprint(used)})
+            if fingerprint(used)==fingerprint(self.read()):
+                self.write({'PAY_KEY_STATUS':state,'PAY_KEY_CHECKED_AT':int(time.time()),'PAY_KEY_FINGERPRINT':fingerprint(used)})
 
-    def apply(self, payload, *, save):
+    def apply(self,payload,*,save):
         with self.locked():
-            current = self.read()
-            candidate = self.candidate(payload, current)
-            try:
-                verify_key(candidate['PAY_ORIGIN'], candidate['PAY_API_KEY'])
-                pem = fetch_public_key(candidate['PAY_ORIGIN'])
-            except ConfigurationError as error:
-                if fingerprint(candidate) == fingerprint(current):
-                    state = 'valid' if error.key_valid else 'invalid' if error.code == 'unauthorized' else 'unverified'
-                    self.write({'PAY_KEY_STATUS':state, 'PAY_KEY_CHECKED_AT':int(time.time()), 'PAY_KEY_FINGERPRINT':fingerprint(current)})
-                raise
-            status = {'PAY_KEY_STATUS':'valid', 'PAY_KEY_CHECKED_AT':int(time.time()), 'PAY_KEY_FINGERPRINT':fingerprint(candidate)}
+            current=self.read(); candidate=self.candidate(payload,current)
+            try:check(candidate)
+            except ConnectionError as exc:
+                if fingerprint(candidate)==fingerprint(current):
+                    self.write({'PAY_KEY_STATUS':'invalid','PAY_KEY_CHECKED_AT':int(time.time()),'PAY_KEY_FINGERPRINT':fingerprint(current)})
+                raise ConfigurationError(exc.code,422) from None
+            status={'PAY_KEY_STATUS':'valid','PAY_KEY_CHECKED_AT':int(time.time()),'PAY_KEY_FINGERPRINT':fingerprint(candidate)}
             if save:
-                self.write({**{k:candidate[k] for k in ('PAY_ORIGIN','DEMO_ORIGIN','PAY_API_KEY')}, 'PAY_PUBLIC_KEY_PEM':pem, **status})
-            elif fingerprint(candidate) == fingerprint(current):
-                self.write({'PAY_PUBLIC_KEY_PEM':pem, **status})
-        return self.public()
+                keys=('PAY_ORIGIN','DEMO_ORIGIN','PAY_MERCHANT_ID','PAY_API_VERSION','PAY_MD5_KEY','PAY_MERCHANT_PRIVATE_KEY','PAY_PLATFORM_PUBLIC_KEY')
+                self.write({**{k:candidate[k] for k in keys},**status})
+            elif fingerprint(candidate)==fingerprint(current):self.write(status)
+        return {**self.public(),'checked':{'pay_origin':candidate['PAY_ORIGIN'],'merchant_id':candidate['PAY_MERCHANT_ID'],'api_version':candidate['PAY_API_VERSION']}}
+
+    def cipher(self,create=False):
+        path=self.lock_file.parent/'connection-master.key'
+        if not path.exists():
+            if not create: raise ValueError('connection_key_missing')
+            database=Path(self.defaults['DATABASE'])
+            if database.exists():
+                with closing(sqlite3.connect(database)) as db:
+                    columns={row[1] for row in db.execute('PRAGMA table_info(orders)')}
+                    if 'connection_enc' in columns and db.execute("SELECT 1 FROM orders WHERE connection_enc!='' LIMIT 1").fetchone():
+                        raise ValueError('connection_key_missing_restore_backup')
+            temporary=path.with_name('.connection-key-'+secrets.token_hex(8))
+            fd=os.open(temporary,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
+            try:
+                with os.fdopen(fd,'wb') as stream:stream.write(Fernet.generate_key());stream.flush();os.fsync(stream.fileno())
+                try:os.link(temporary,path)
+                except FileExistsError:pass
+            finally:temporary.unlink(missing_ok=True)
+        return Fernet(path.read_bytes())
+
+    def seal(self,values):
+        keys=('PAY_ORIGIN','DEMO_ORIGIN','PAY_MERCHANT_ID','PAY_API_VERSION','PAY_MD5_KEY','PAY_MERCHANT_PRIVATE_KEY','PAY_PLATFORM_PUBLIC_KEY')
+        return self.cipher(True).encrypt(json.dumps({k:values.get(k,'') for k in keys}).encode()).decode()
+
+    def open_snapshot(self,value):
+        return json.loads(self.cipher().decrypt(value.encode()))

@@ -1,249 +1,255 @@
-"""Independent merchant demo. It knows only the Pay HTTP API and its public signing key."""
+"""Independent merchant: Epay V1/V2 signing, embedded Pay cashier and verified receipts."""
 import base64
-import hashlib
 import fcntl
+import hashlib
+import hmac
+import ipaddress
 import json
 import os
 import re
 import secrets
-import ipaddress
 import sqlite3
 import time
 from contextlib import contextmanager
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from cryptography.exceptions import InvalidSignature
+from cryptography.fernet import InvalidToken
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request, send_from_directory
-from pay_http import request_json
-from configuration import Configuration, ConfigurationError, local_hosts, valid_public_key
 
-ROOT = Path(__file__).resolve().parent
-load_dotenv(ROOT / ".env")
+from configuration import Configuration, ConfigurationError, local_hosts
+from connection import ConnectionError, call, create, verify_notification
+
+ROOT=Path(__file__).resolve().parent
+load_dotenv(ROOT/'.env')
 
 
 def create_app(settings=None):
-    app = Flask(__name__, static_folder=None)
-    app.config.update(PAY_ORIGIN=os.getenv("PAY_ORIGIN", "http://127.0.0.1:888"),
-                      DEMO_ORIGIN=os.getenv("DEMO_ORIGIN", "http://127.0.0.1:8100"),
-                      PAY_API_KEY=os.getenv("PAY_API_KEY", ""), DEMO_PORT=os.getenv("DEMO_PORT", "8100"),
-                      PAY_PUBLIC_KEY_FILE=os.getenv("PAY_PUBLIC_KEY_FILE", str(ROOT / "secrets/bypay-public.pem")),
-                      DATABASE=os.getenv("DATABASE", str(ROOT / "data/demo.sqlite3")),
-                      MAX_CONTENT_LENGTH=32768)
+    app=Flask(__name__,static_folder=None)
+    defaults={'PAY_ORIGIN':'http://127.0.0.1:888','DEMO_ORIGIN':'http://127.0.0.1:8100','DEMO_PORT':'8100',
+              'PAY_MERCHANT_ID':'','PAY_API_VERSION':'v1','PAY_MD5_KEY':'','PAY_MERCHANT_PRIVATE_KEY':'','PAY_PLATFORM_PUBLIC_KEY':'',
+              'PAY_PUBLIC_KEY_FILE':str(ROOT/'secrets/bypay-public.pem'),'DATABASE':str(ROOT/'data/demo.sqlite3')}
+    app.config.update({k:os.getenv(k,v) for k,v in defaults.items()},MAX_CONTENT_LENGTH=32768,DEMO_SETUP_TOKEN=os.getenv('DEMO_SETUP_TOKEN',secrets.token_urlsafe(32)))
     app.config.update(settings or {})
-    port = int(app.config["DEMO_PORT"])
-    allowed_origins = {app.config["DEMO_ORIGIN"].rstrip("/")} | {
-        f"http://{'[' + host + ']' if ':' in host else host}:{port}" for host in local_hosts()
-    }
-    database = Path(app.config["DATABASE"])
-    database.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    source = app.config.get("CONFIG_FILE", database.parent / '.env' if app.testing else ROOT / '.env')
-    config = Configuration(source, app.config, database.parent / 'config.lock')
-    initial = config.read()
-    app.extensions['configuration'] = config
-
-    def can_manage():
-        # Local browser / WSL / LAN development, without a login or management link
-        try:
-            peer = ipaddress.ip_address(request.remote_addr or '')
-            local_peer = peer.is_loopback or peer.is_private
-        except ValueError:
-            local_peer = False
-        return (local_peer and request.scheme == 'http'
-                and urlsplit(request.host_url).hostname in local_hosts()
-                and not any(k.lower() == 'forwarded' or k.lower().startswith('x-forwarded-') for k in request.headers.keys()))
+    port=int(app.config['DEMO_PORT']);database=Path(app.config['DATABASE'])
+    database.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+    source=app.config.get('CONFIG_FILE',database.parent/'.env' if app.testing else ROOT/'.env')
+    config=Configuration(source,app.config,database.parent/'config.lock');initial=config.read()
+    app.extensions['configuration']=config
+    allowed_origins={initial['DEMO_ORIGIN']}|{f"http://{'['+h+']' if ':' in h else h}:{port}" for h in local_hosts()}
 
     @contextmanager
     def db():
-        connection = sqlite3.connect(database, timeout=15)
-        connection.row_factory = sqlite3.Row
+        connection=sqlite3.connect(database,timeout=15);connection.row_factory=sqlite3.Row
         try:
-            with connection:
-                yield connection
-        finally:
-            connection.close()
+            with connection:yield connection
+        finally:connection.close()
 
     with db() as connection:
-        connection.executescript("""
-            PRAGMA journal_mode=WAL;
-            CREATE TABLE IF NOT EXISTS orders (number TEXT PRIMARY KEY, amount TEXT NOT NULL, status TEXT NOT NULL,
-                pay_url TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, trade_no TEXT, paid_at INTEGER);
-            CREATE TABLE IF NOT EXISTS receipts (id TEXT PRIMARY KEY, body_hash TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY, time INTEGER NOT NULL, stage TEXT NOT NULL,
-                number TEXT, detail TEXT NOT NULL);
-        """)
-        columns = {row[1] for row in connection.execute("PRAGMA table_info(orders)")}
-        if 'public_key_pem' not in columns:
-            connection.execute("ALTER TABLE orders ADD COLUMN public_key_pem TEXT NOT NULL DEFAULT ''")
-        if valid_public_key(initial.get('PAY_PUBLIC_KEY_PEM')):
-            connection.execute("UPDATE orders SET public_key_pem=? WHERE public_key_pem=''", (initial['PAY_PUBLIC_KEY_PEM'],))
+        connection.executescript('''PRAGMA journal_mode=WAL;
+          CREATE TABLE IF NOT EXISTS orders(number TEXT PRIMARY KEY,amount TEXT NOT NULL,status TEXT NOT NULL,pay_url TEXT NOT NULL DEFAULT '',created_at INTEGER NOT NULL,trade_no TEXT,paid_at INTEGER);
+          CREATE TABLE IF NOT EXISTS receipts(id TEXT PRIMARY KEY,body_hash TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS logs(id INTEGER PRIMARY KEY,time INTEGER NOT NULL,stage TEXT NOT NULL,number TEXT,detail TEXT NOT NULL);''')
+        columns={r[1] for r in connection.execute('PRAGMA table_info(orders)')}
+        for name,definition in {'public_key_pem':"TEXT NOT NULL DEFAULT ''",'platform_no':"TEXT NOT NULL DEFAULT ''",'api_version':"TEXT NOT NULL DEFAULT 'legacy'",'merchant_id':"TEXT NOT NULL DEFAULT ''",'connection_enc':"TEXT NOT NULL DEFAULT ''",'last_query_at':'INTEGER NOT NULL DEFAULT 0','confirmed_by':"TEXT NOT NULL DEFAULT ''"}.items():
+            if name not in columns:connection.execute(f'ALTER TABLE orders ADD COLUMN {name} {definition}')
     database.chmod(0o600)
 
-    def write_log(stage, number=None, detail=None):
-        record = json.dumps({"time":int(time.time()),"stage":stage,"number":number,"detail":detail or {}},ensure_ascii=False)
-        log_path=database.parent/'logs/demo.jsonl'
-        log_path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
-        with (log_path.parent/'demo.lock').open('a') as lock:
+    def can_manage():
+        token=request.headers.get('X-Demo-Setup','')
+        if token and hmac.compare_digest(token,app.config['DEMO_SETUP_TOKEN']):return True
+        try:peer=ipaddress.ip_address(request.remote_addr or '');local_peer=peer.is_loopback or peer.is_private
+        except ValueError:local_peer=False
+        return local_peer and request.scheme=='http' and urlsplit(request.host_url).hostname in local_hosts() and not any(k.lower()=='forwarded' or k.lower().startswith('x-forwarded-') for k in request.headers.keys())
+
+    def log(stage,number=None,detail=None):
+        detail=detail or {}
+        with db() as connection:
+            connection.execute('INSERT INTO logs(time,stage,number,detail) VALUES (?,?,?,?)',(int(time.time()),stage,number,json.dumps(detail,ensure_ascii=False)))
+            connection.execute('DELETE FROM logs WHERE id < (SELECT COALESCE(MAX(id),0)-5000 FROM logs)')
+        record=json.dumps({'time':int(time.time()),'stage':stage,'number':number,'detail':detail},ensure_ascii=False)
+        directory=database.parent/'logs';directory.mkdir(parents=True,exist_ok=True,mode=0o700);path=directory/'demo.jsonl'
+        with (directory/'demo.lock').open('a') as lock:
             fcntl.flock(lock.fileno(),fcntl.LOCK_EX)
-            if log_path.exists() and log_path.stat().st_size>5_000_000: log_path.replace(log_path.with_suffix('.jsonl.1'))
-            fd=os.open(log_path,os.O_WRONLY|os.O_CREAT|os.O_APPEND,0o600)
-            try: os.write(fd,(record+'\n').encode())
-            finally: os.close(fd)
+            if path.exists() and path.stat().st_size>5_000_000:path.replace(path.with_suffix('.jsonl.1'))
+            fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_APPEND,0o600)
+            with os.fdopen(fd,'a') as stream:stream.write(record+'\n')
         print(record,flush=True)
 
-    def log(stage, number=None, detail=None):
-        with db() as connection:
-            connection.execute("INSERT INTO logs(time,stage,number,detail) VALUES (?,?,?,?)", (int(time.time()), stage, number, json.dumps(detail or {}, ensure_ascii=False)))
-            connection.execute("DELETE FROM logs WHERE id < (SELECT COALESCE(MAX(id),0)-5000 FROM logs)")
-        write_log(stage, number, detail)
+    def order(number):
+        with db() as connection:row=connection.execute('SELECT * FROM orders WHERE number=?',(number,)).fetchone()
+        return dict(row) if row else None
 
-    def pay_request(settings, method, path, payload=None):
-        if not settings.get("PAY_API_KEY"): return {"error":"pay_key_missing"}, 503
-        return request_json(method, settings['PAY_ORIGIN'] + path, payload=payload, api_key=settings['PAY_API_KEY'])
+    def public(row):
+        return {k:row[k] for k in ('number','amount','status','pay_url','created_at','paid_at','platform_no','api_version','merchant_id','confirmed_by')}
 
     @app.before_request
-    def authenticate():
-        if request.path in {"/notify", "/health"}:
-            return None
-        if request.method == "POST":
-            if request.headers.get("Origin") not in allowed_origins | {config.read()["DEMO_ORIGIN"]} or request.headers.get("X-Demo-Request") != "1" or not request.is_json:
-                return jsonify(error="invalid_request"), 403
+    def browser_guard():
+        if request.path=='/notify':return
+        if request.method=='POST' and (request.headers.get('Origin') not in allowed_origins|{config.read()['DEMO_ORIGIN']} or request.headers.get('X-Demo-Request')!='1' or not request.is_json):
+            return jsonify(error='invalid_request'),403
 
     @app.after_request
     def headers(response):
-        response.headers.update({"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer",
-                                 "Content-Security-Policy": "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"})
+        origin=config.read()['PAY_ORIGIN']
+        parsed=urlsplit(origin);frames={origin}
+        if parsed.scheme=='http' and parsed.hostname in {'localhost','127.0.0.1','::1'}:
+            suffix=':'+str(parsed.port) if parsed.port else ''
+            frames.update('http://'+host+suffix for host in ('localhost','127.0.0.1','[::1]'))
+        frame_sources=' '.join(sorted(frames))
+        response.headers.update({'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer',
+                                 'Content-Security-Policy':f"default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; frame-src {frame_sources}; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"})
         return response
 
-    @app.get("/health")
-    def health():
-        return jsonify(ok=True)
+    @app.get('/health')
+    def health():return jsonify(ok=True)
 
-    @app.get("/")
+    @app.get('/')
+    @app.get('/return')
     def home():
-        return send_from_directory(ROOT / "static", "index.html")
+        if request.path=='/return':log('return.received',detail={'note':'浏览器返回不作为到账凭证'})
+        return send_from_directory(ROOT/'static','index.html')
 
-    @app.get("/static/<path:path>")
-    def static_files(path):
-        return send_from_directory(ROOT / "static", path)
+    @app.get('/static/<path:path>')
+    def static_files(path):return send_from_directory(ROOT/'static',path)
 
-    @app.get("/api/state")
+    @app.get('/api/state')
     def state():
         with db() as connection:
-            orders = [dict(row) for row in connection.execute("SELECT number,amount,status,pay_url,created_at,trade_no,paid_at FROM orders ORDER BY created_at DESC LIMIT 30")]
-            logs = [{**dict(row), "detail": json.loads(row["detail"])} for row in connection.execute("SELECT * FROM logs ORDER BY id DESC LIMIT 80")]
-        return jsonify(orders=orders, logs=logs, **config.public(editable=can_manage()))
+            orders=[public(dict(r)) for r in connection.execute('SELECT * FROM orders ORDER BY created_at DESC,rowid DESC LIMIT 30')]
+            logs=[{**dict(r),'detail':json.loads(r['detail'])} for r in connection.execute('SELECT * FROM logs ORDER BY id DESC LIMIT 80')]
+        return jsonify(orders=orders,logs=logs,**config.public(editable=can_manage()))
 
     @app.get('/api/config')
-    def get_config():
-        return jsonify(**config.public(editable=can_manage()),
-                       local_pay_origin='http://127.0.0.1:888', local_demo_origin=f'http://127.0.0.1:{port}')
+    def get_config():return jsonify(**config.public(editable=can_manage()),local_pay_origin='http://127.0.0.1:888',local_demo_origin=f'http://127.0.0.1:{port}')
 
     @app.post('/api/config')
     @app.post('/api/config/check')
     def update_config():
-        if not can_manage():
-            return jsonify(error='local_configuration_only'), 403
-        save = request.path == '/api/config'
-        try:
-            result = config.apply(request.get_json(silent=True), save=save)
-        except ConfigurationError as error:
-            log('config.rejected', detail={'error':error.code, 'http_status':error.upstream_status, 'saved':False})
-            return jsonify(error=error.code, upstream_status=error.upstream_status, key_valid=error.key_valid, saved=False), error.http_status
+        if not can_manage():return jsonify(error='configuration_access_required'),403
+        save=request.path=='/api/config'
+        try:verified=config.apply(request.get_json(silent=True),save=save)
+        except ConfigurationError as exc:
+            log('config.rejected',detail={'error':exc.code,'saved':False})
+            return jsonify(error=exc.code,saved=False),exc.http_status
         except OSError:
-            log('config.rejected', detail={'error':'config_write_failed', 'saved':False})
-            return jsonify(error='config_write_failed', saved=False), 500
-        log('config.saved' if save else 'config.checked', detail={'pay_origin':result['pay_origin'], 'callback_url':result['callback_url'], 'saved':save})
-        return jsonify(**result, saved=save, verified=True)
+            return jsonify(error='config_write_failed',saved=False),500
+        result=config.public(editable=True)
+        log('config.saved' if save else 'config.checked',detail={**verified['checked'],'saved':save})
+        return jsonify(**result,saved=save,verified=True)
 
-    @app.post("/api/orders")
+    @app.post('/api/orders')
     def create_order():
-        payload = request.get_json(silent=True)
-        if not isinstance(payload, dict):
-            return jsonify(error="invalid_request"), 400
-        settings = config.read()
-        if not settings.get('PAY_API_KEY'):
-            return jsonify(error='pay_key_missing'), 400
-        amount = payload.get("amount", "")
-        if not isinstance(amount, str) or not re.fullmatch(r"\d{1,2}(?:\.\d{1,2})?", amount) or not Decimal("0") < Decimal(amount) <= Decimal("10"):
-            return jsonify(error="amount_between_001_and_10"), 400
-        amount = format(Decimal(amount), ".2f")
-        number = "DEMO_" + str(int(time.time())) + "_" + secrets.token_hex(6)
-        with db() as connection:
-            connection.execute("INSERT INTO orders(number,amount,status,created_at,public_key_pem) VALUES (?,?,'CREATING',?,?)", (number, amount, int(time.time()), settings.get("PAY_PUBLIC_KEY_PEM", "")))
-        data = {"out_trade_no": number, "amount": amount, "subject": "独立商户回调测试", "channel": "alipay", "product": payload.get("product", "page"), "notify_url": settings["DEMO_ORIGIN"] + "/notify"}
-        log("create.request", number, data)
-        response, code = pay_request(settings, "POST", "/api/v1/payments", data)
-        order = response.get("order")
-        if not isinstance(order, dict) or not isinstance(order.get("pay_url"), str):
-            order = {}
-        valid_url = urlsplit(order.get("pay_url", ""))
-        if code not in {200, 201} or valid_url.scheme != "https" or valid_url.hostname not in {"openapi.alipay.com", "openapi-sandbox.dl.alipaydev.com"}:
-            with db() as connection:
-                connection.execute("UPDATE orders SET status='CREATE_FAILED' WHERE number=? AND status='CREATING'", (number,))
-            if code == 401:
-                config.mark_key(settings, 'invalid')
-            log("create.failed", number, {"http_status": code, "error": response.get("error", "invalid_checkout_url")})
-            return jsonify(error=response.get("error", "invalid_checkout_url")), 502
-        with db() as connection:
-            connection.execute("UPDATE orders SET status=CASE WHEN status='CREATING' THEN 'WAITING' ELSE status END,pay_url=? WHERE number=?", (order["pay_url"], number))
-        log("create.accepted", number, {"http_status": code, "status": order["status"], "amount": order["amount"], "note": "本地订单已创建，等待支付回调。"})
-        return jsonify(order=order), 201
-
-    @app.post("/notify")
-    def notify():
-        raw = request.get_data()
+        payload=request.get_json(silent=True)
+        if not isinstance(payload,dict):return jsonify(error='invalid_request'),400
+        amount=payload.get('amount','')
+        if not isinstance(amount,str) or not re.fullmatch(r'\d{1,2}(?:\.\d{1,2})?',amount) or not Decimal('0')<Decimal(amount)<=Decimal('10'):
+            return jsonify(error='amount_between_001_and_10'),400
+        settings=config.read();amount=format(Decimal(amount),'.2f')
+        number='DEMO_'+str(int(time.time()))+'_'+secrets.token_hex(6)
         try:
-            stamp = request.headers.get("X-ByPay-Timestamp", "")
-            if abs(time.time() - int(stamp)) > 300:
-                raise ValueError("expired_timestamp")
-            payload = json.loads(raw)
-            if not isinstance(payload, dict) or not isinstance(payload.get('out_trade_no'), str):
-                raise ValueError('invalid_event')
+            from connection import credentials
+            credentials(settings)
+        except ConnectionError as exc:return jsonify(error=exc.code),400
+        with db() as connection:
+            connection.execute("INSERT INTO orders(number,amount,status,created_at,api_version,merchant_id,connection_enc) VALUES (?,?,'CREATING',?,?,?,?)",(number,amount,int(time.time()),settings['PAY_API_VERSION'],settings['PAY_MERCHANT_ID'],config.seal(settings)))
+        log('create.request',number,{'merchant_id':settings['PAY_MERCHANT_ID'],'api_version':settings['PAY_API_VERSION'],'amount':amount,'notify_url':settings['DEMO_ORIGIN']+'/notify'})
+        try:
+            result=create(settings,number,amount,'独立商户支付测试',request.remote_addr or '127.0.0.1')
             with db() as connection:
-                key_order = connection.execute('SELECT public_key_pem FROM orders WHERE number=?', (payload['out_trade_no'],)).fetchone()
-            pem = key_order['public_key_pem'] if key_order and key_order['public_key_pem'] else config.read().get('PAY_PUBLIC_KEY_PEM', '')
-            public = serialization.load_pem_public_key(pem.encode())
-            if not isinstance(public, Ed25519PublicKey):
-                raise ValueError("invalid_key_type")
-            public.verify(base64.b64decode(request.headers.get("X-ByPay-Signature", ""), validate=True), stamp.encode() + b"." + raw)
-            payload = json.loads(raw)
-            if not isinstance(payload, dict) or payload.get("id") != request.headers.get("X-ByPay-Event-Id") or payload.get("event") != "payment.paid" or payload.get("status") != "PAID" or payload.get("currency") != "CNY" or payload.get("channel") != "alipay":
-                raise ValueError("invalid_event")
-            number = payload.get("out_trade_no")
-            if not isinstance(number, str) or not isinstance(payload.get("amount"), str) or not re.fullmatch(r"\d{1,8}\.\d{2}", payload["amount"]):
-                raise ValueError("invalid_fields")
-            if not isinstance(payload.get("trade_no"), str) or not re.fullmatch(r"[A-Za-z0-9_-]{6,64}", payload["trade_no"]) or not isinstance(payload.get("paid_at"), int) or payload["paid_at"] <= 0:
-                raise ValueError("invalid_trade")
-            body_hash = hashlib.sha256(raw).hexdigest()
-            with db() as connection:
-                connection.execute("BEGIN IMMEDIATE")
-                previous = connection.execute("SELECT body_hash FROM receipts WHERE id=?", (payload["id"],)).fetchone()
-                if previous:
-                    if previous["body_hash"] != body_hash:
-                        raise ValueError("reused_event_id")
-                    return "success", 200, {"Content-Type": "text/plain"}
-                order = connection.execute("SELECT * FROM orders WHERE number=?", (number,)).fetchone()
-                if not order or Decimal(order["amount"]) != Decimal(payload["amount"]):
-                    raise ValueError("order_or_amount_mismatch")
-                if order["trade_no"] and order["trade_no"] != payload.get("trade_no"):
-                    raise ValueError("trade_mismatch")
-                connection.execute("UPDATE orders SET status='PAID',trade_no=?,paid_at=? WHERE number=?", (payload.get("trade_no"), payload.get("paid_at"), number))
-                connection.execute("INSERT INTO receipts VALUES (?,?)", (payload["id"], body_hash))
-                connection.execute("INSERT INTO logs(time,stage,number,detail) VALUES (?,'notify.verified',?,?)", (int(time.time()), number, json.dumps(payload, ensure_ascii=False)))
-        except (ValueError, OSError, InvalidSignature, TypeError, KeyError):
-            log("notify.rejected", detail={"reason": "签名、时间或订单金额校验失败，未更新订单。"})
-            return "failure", 400, {"Content-Type": "text/plain"}
-        write_log("notify.verified", number, payload)
-        return "success", 200, {"Content-Type": "text/plain"}
+                row=connection.execute('SELECT platform_no FROM orders WHERE number=?',(number,)).fetchone()
+                if row['platform_no'] and row['platform_no']!=result['trade_no']:raise ConnectionError('invalid_checkout_response')
+                connection.execute("UPDATE orders SET status=CASE WHEN status='CREATING' THEN 'WAITING' ELSE status END,pay_url=?,platform_no=? WHERE number=?",(result['pay_url'],result['trade_no'],number))
+        except ConnectionError as exc:
+            with db() as connection:connection.execute("UPDATE orders SET status='CREATE_FAILED' WHERE number=? AND status='CREATING'",(number,))
+            if exc.code in {'invalid_signature','merchant_unavailable','rsa_required'}:config.mark_key(settings,'invalid')
+            log('create.failed',number,{'error':exc.code})
+            return jsonify(error=exc.code),502
+        log('create.accepted',number,{'platform_no':result['trade_no'],'amount':amount,'cashier_origin':settings['PAY_ORIGIN']})
+        return jsonify(order=public(order(number))),201
 
-    log("app.started", detail={"pay_origin":initial["PAY_ORIGIN"],"callback_url":initial["DEMO_ORIGIN"] + "/notify"})
+    def confirm(row,params,source):
+        number=row['number'];trade=str(params.get('trade_no',''))
+        if not re.fullmatch(r'[A-Za-z0-9_-]{6,64}',trade) or params.get('out_trade_no')!=number or str(params.get('pid'))!=row['merchant_id'] or params.get('type')!='alipay' or Decimal(str(params.get('money','')))!=Decimal(row['amount']):raise ValueError('order_mismatch')
+        if row['platform_no'] and row['platform_no']!=trade:raise ValueError('platform_order_mismatch')
+        canonical=json.dumps({'pid':row['merchant_id'],'trade_no':trade,'out_trade_no':number,'money':row['amount'],'type':'alipay'},sort_keys=True)
+        receipt='epay:'+row['merchant_id']+':'+trade
+        digest=hashlib.sha256(canonical.encode()).hexdigest()
+        with db() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            old=connection.execute('SELECT body_hash FROM receipts WHERE id=?',(receipt,)).fetchone()
+            if old:
+                if old['body_hash']!=digest:raise ValueError('receipt_mismatch')
+                return False
+            connection.execute("UPDATE orders SET status='PAID',platform_no=?,trade_no=?,paid_at=COALESCE(paid_at,?),confirmed_by=? WHERE number=?",(trade,params.get('api_trade_no',trade),int(time.time()),source,number))
+            connection.execute('INSERT INTO receipts VALUES (?,?)',(receipt,digest))
+        return True
+
+    @app.post('/api/orders/<number>/sync')
+    def sync_order(number):
+        row=order(number)
+        if not row:return jsonify(error='order_not_found'),404
+        if row['status']!='WAITING' or not row['connection_enc']:return jsonify(order=public(row))
+        with db() as connection:
+            acquired=connection.execute('UPDATE orders SET last_query_at=? WHERE number=? AND last_query_at<=?',(int(time.time()),number,int(time.time())-3)).rowcount
+        if not acquired:return jsonify(order=public(row))
+        try:
+            settings=config.open_snapshot(row['connection_enc'])
+            result=call(settings,'query',{'out_trade_no':number})
+            if result.get('status')==1:
+                if confirm(row,result,'query'):log('query.verified',number,{'platform_no':result['trade_no'],'status':'PAID'})
+            elif result.get('state') in {'EXPIRED','CLOSED'}:
+                with db() as connection:connection.execute("UPDATE orders SET status=? WHERE number=? AND status='WAITING'",(result['state'],number))
+        except (ConnectionError,ValueError,InvalidOperation,InvalidToken) as exc:
+            code=exc.code if isinstance(exc,ConnectionError) else 'query_verification_failed'
+            log('query.rejected',number,{'error':code});return jsonify(error=code),502
+        return jsonify(order=public(order(number)))
+
+    def legacy_notify():
+        raw=request.get_data();stamp=request.headers.get('X-ByPay-Timestamp','')
+        if abs(time.time()-int(stamp))>300:raise ValueError('expired_timestamp')
+        value=json.loads(raw)
+        if not isinstance(value,dict):raise ValueError('invalid_event')
+        row=order(value.get('out_trade_no',''))
+        if not row or row['api_version']!='legacy':raise ValueError('not_legacy_order')
+        pem=row['public_key_pem'] or config.read().get('PAY_PUBLIC_KEY_PEM') or Path(app.config['PAY_PUBLIC_KEY_FILE']).read_text()
+        key=serialization.load_pem_public_key(pem.encode())
+        if not isinstance(key,Ed25519PublicKey):raise ValueError('invalid_key')
+        key.verify(base64.b64decode(request.headers.get('X-ByPay-Signature',''),validate=True),stamp.encode()+b'.'+raw)
+        if value.get('id')!=request.headers.get('X-ByPay-Event-Id') or value.get('event')!='payment.paid' or value.get('status')!='PAID' or value.get('currency')!='CNY' or value.get('channel')!='alipay' or Decimal(value['amount'])!=Decimal(row['amount']) or not re.fullmatch(r'[A-Za-z0-9_-]{6,64}',str(value.get('trade_no',''))) or type(value.get('paid_at'))is not int or value['paid_at']<=0:raise ValueError('invalid_event')
+        with db() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            previous=connection.execute('SELECT body_hash FROM receipts WHERE id=?',(value['id'],)).fetchone();digest=hashlib.sha256(raw).hexdigest()
+            if previous:
+                if previous['body_hash']!=digest:raise ValueError('receipt_mismatch')
+                return
+            if row['trade_no'] and row['trade_no']!=value['trade_no']:raise ValueError('trade_mismatch')
+            connection.execute("UPDATE orders SET status='PAID',trade_no=?,paid_at=?,confirmed_by='legacy_notify' WHERE number=?",(value['trade_no'],value['paid_at'],row['number']))
+            connection.execute('INSERT INTO receipts VALUES (?,?)',(value['id'],digest))
+        log('notify.verified',row['number'],{'api_version':'legacy','status':'PAID'})
+
+    @app.route('/notify',methods=['GET','POST'])
+    def notify():
+        try:
+            if request.is_json:
+                legacy_notify()
+            else:
+                fields=request.args if request.method=='GET' else request.form
+                if not fields or any(len(fields.getlist(k))!=1 for k in fields):raise ValueError('invalid_fields')
+                params=fields.to_dict();row=order(params.get('out_trade_no',''))
+                if not row or not row['connection_enc']:raise ValueError('order_not_found')
+                verify_notification(config.open_snapshot(row['connection_enc']),params)
+                fresh=confirm(row,params,'notify')
+                log('notify.verified' if fresh else 'notify.duplicate',row['number'],{'api_version':row['api_version'],'platform_no':params['trade_no'],'status':'PAID'})
+        except (ValueError,InvalidOperation,OSError,InvalidSignature,InvalidToken,TypeError,KeyError):
+            log('notify.rejected',detail={'reason':'签名、时间、商户、订单或金额校验失败'})
+            return 'failure',400,{'Content-Type':'text/plain'}
+        return 'success',200,{'Content-Type':'text/plain'}
+
+    log('app.started',detail={'pay_origin':initial['PAY_ORIGIN'],'callback_url':initial['DEMO_ORIGIN']+'/notify','api_version':initial['PAY_API_VERSION']})
     return app
-
-
-if __name__ == "__main__":
-    create_app().run(host="127.0.0.1", port=8100)

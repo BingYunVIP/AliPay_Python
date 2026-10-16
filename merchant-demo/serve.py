@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 import ctypes
+import secrets
 from pathlib import Path
 from dotenv import dotenv_values
 
@@ -27,8 +28,14 @@ def main():
             with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as sock:
                 sock.connect(('8.8.8.8',80));address=sock.getsockname()[0]
         except OSError: address='127.0.0.1'
-    print(f'\n冰云支付 · 独立回调测试站\n访问地址：http://{address}:{port}\n本机地址：http://127.0.0.1:{port}\n回调地址：{values.get("DEMO_ORIGIN","http://127.0.0.1:8100").rstrip("/")}/notify\n日志文件：{log}\nAPI Key 可在网页修改，保存后立即生效\n按 Ctrl+C 停止测试站\n',flush=True)
-    env={**os.environ,'DEMO_PORT':str(port),'PYTHONUNBUFFERED':'1'}
+    print(f'\n冰云支付 · 独立回调测试站\n访问地址：http://{address}:{port}\n本机地址：http://127.0.0.1:{port}\n回调地址：{values.get("DEMO_ORIGIN","http://127.0.0.1:8100").rstrip("/")}/notify\n日志文件：{log}\n商户接口可在网页修改，保存后立即生效\n按 Ctrl+C 停止测试站\n',flush=True)
+    setup_token=secrets.token_urlsafe(32)
+    link=values.get('DEMO_ORIGIN',f'http://127.0.0.1:{port}').rstrip('/')+'/#setup='+setup_token
+    target=Path(values.get('DATABASE',str(ROOT/'data/demo.sqlite3'))).parent
+    target.mkdir(parents=True,exist_ok=True,mode=0o700)
+    (target/'.setup-link').write_text(link+'\n');(target/'.setup-link').chmod(0o600)
+    print('网页配置链接：'+link,flush=True)
+    env={**os.environ,'DEMO_SETUP_TOKEN':setup_token,'DEMO_PORT':str(port),'PYTHONUNBUFFERED':'1'}
     parent=os.getpid()
     def parent_guard():
         ctypes.CDLL(None).prctl(1,signal.SIGTERM)

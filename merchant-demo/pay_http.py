@@ -4,7 +4,7 @@ import json
 import httpx
 
 
-def request_json(method, url, *, payload=None, api_key=None):
+def request_json(method, url, *, payload=None, api_key=None, form=False):
     headers = {"Accept": "application/json"}
     if api_key:
         headers["Authorization"] = "Bearer " + api_key
@@ -12,7 +12,7 @@ def request_json(method, url, *, payload=None, api_key=None):
         # Keep TLS verification enabled and never forward credentials through redirects.
         with httpx.Client(timeout=httpx.Timeout(15, connect=5), follow_redirects=False,
                           trust_env=False) as client:
-            kwargs = {"json": payload} if payload is not None else {}
+            kwargs = {"data" if form else "json": payload} if payload is not None else {}
             with client.stream(method, url, headers=headers, **kwargs) as response:
                 status = response.status_code
                 if 300 <= status < 400:

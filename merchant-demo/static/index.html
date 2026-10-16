@@ -1,39 +1,23 @@
 <!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>冰云支付 · 本地联调</title>
-  <link rel="stylesheet" href="/static/style.css"><script defer src="/static/app.js"></script>
-</head>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>冰云支付 · 商户联调</title><link rel="stylesheet" href="/static/fonts/fonts.css"><link rel="stylesheet" href="/static/style.css"><script defer src="/static/app.js"></script></head>
 <body><main>
-  <header><a id="pay-home" href="http://127.0.0.1:888" target="_blank" rel="noopener noreferrer">冰云支付 <span>Pay ↗</span></a><span class="tag" id="site-mode">支付测试</span></header>
-  <section class="intro"><h1>支付联调</h1><p>连接 Pay，创建订单并查看回调</p></section>
-  <section class="panel configuration-panel" id="configuration">
-    <div class="panel-head"><h2>连接配置</h2><span id="connection-state" class="connection-state">正在读取</span></div>
-    <form id="config-form">
-      <fieldset id="config-fields">
-        <div class="config-grid">
-          <div><label for="config-pay-origin">Pay 服务地址</label><input id="config-pay-origin" type="url" required placeholder="http://127.0.0.1:888" spellcheck="false"></div>
-          <div><label for="config-demo-origin">测试站地址</label><input id="config-demo-origin" type="url" required placeholder="http://127.0.0.1:8100" spellcheck="false" aria-describedby="callback-hint"></div>
-        </div>
-        <p class="hint" id="callback-hint">Pay 将支付结果发送到测试站的 /notify</p>
-        <label for="config-api-key">Pay API Key <span id="key-hint"></span></label>
-        <div class="secret-input"><input id="config-api-key" type="password" autocomplete="off" spellcheck="false" maxlength="204" placeholder="粘贴 Pay 控制台生成的 byp_ 开头密钥" aria-describedby="key-help"><button id="toggle-key" type="button" class="secondary" aria-label="显示 API Key" aria-pressed="false">显示</button></div>
-        <p class="hint" id="key-help">留空保留已保存的密钥 · <a id="key-console" href="http://127.0.0.1:888/dashboard?tab=keys" target="_blank" rel="noopener noreferrer">在 Pay 控制台获取 API Key ↗</a></p>
-        <div class="config-actions"><button id="save-config" type="submit">验证并保存</button><button id="check-config" type="button" class="secondary">测试连接</button><button id="local-config" type="button" class="text-button">使用本地地址</button></div>
-      </fieldset>
-    </form>
-    <p id="config-message" class="form-message" role="status" aria-live="polite"></p>
-  </section>
-  <div class="columns">
-    <section class="panel">
-      <h2>创建测试订单</h2>
-      <form id="create-form"><label for="amount">订单金额（元）</label><input id="amount" name="amount" value="0.01" inputmode="decimal" pattern="[0-9]+(\.[0-9]{1,2})?" required><label for="product">支付方式</label><select id="product"><option value="page">支付宝 · 网页支付</option><option value="wap">支付宝 · 手机支付</option></select><button id="submit" type="submit" disabled>创建订单并获取支付链接 →</button></form>
-      <p id="message" class="form-message" role="status"></p>
-      <dl><dt>当前 Pay 地址</dt><dd id="pay-origin">—</dd><dt>Pay 向测试站发送业务回调</dt><dd id="callback-url">—</dd></dl>
-      <p id="config-status" class="hint"></p>
-    </section>
-    <section class="panel"><div class="panel-head"><h2>测试订单</h2><button id="refresh" class="secondary">刷新</button></div><div id="orders" class="orders"><p class="empty">正在读取</p></div></section>
-  </div>
-  <section class="panel logs-panel"><h2>事件日志</h2><p class="hint">自动更新下单、配置验证和回调记录</p><div id="logs"></div></section>
+<header><a id="pay-home" href="http://127.0.0.1:888" target="_blank" rel="noopener noreferrer">冰云支付 <span>Pay ↗</span></a><span class="tag" id="site-mode">独立商户测试站</span></header>
+<section class="intro"><h1>商户支付联调</h1><p>配置商户接口，在 Pay 收银台付款，验证订单与回调</p></section>
+<section class="panel configuration-panel" id="configuration">
+  <div class="panel-head"><h2>商户接口</h2><span id="connection-state" class="connection-state">正在读取</span></div>
+  <form id="config-form"><fieldset id="config-fields">
+    <div class="config-grid"><div><label for="config-pay-origin">接口地址</label><input id="config-pay-origin" type="url" required placeholder="https://pay.bingyun.vip" spellcheck="false"></div><div><label for="config-demo-origin">测试站地址</label><input id="config-demo-origin" type="url" required placeholder="https://test.bingyun.vip" spellcheck="false"></div></div>
+    <div class="config-grid merchant-fields"><div><label for="config-merchant-id">商户 ID</label><input id="config-merchant-id" inputmode="numeric" pattern="[0-9]{1,12}" placeholder="1000" required></div><div><label for="config-version">接口版本</label><select id="config-version"><option value="v1">V1 · MD5 签名</option><option value="v2">V2 · RSA 签名</option></select></div></div>
+    <div id="v1-fields"><label for="config-md5">商户 MD5 密钥</label><input id="config-md5" type="password" autocomplete="off" maxlength="128" placeholder="填写 Pay 商户接口页面的 MD5 密钥"><p id="md5-hint" class="hint"></p></div>
+    <div id="v2-fields" hidden><label for="config-platform-key">平台公钥</label><textarea id="config-platform-key" rows="4" spellcheck="false" placeholder="粘贴 Pay 平台公钥"></textarea><label for="config-private-key">商户私钥</label><textarea id="config-private-key" rows="5" spellcheck="false" autocomplete="off" placeholder="粘贴商户私钥，不是商户公钥"></textarea><p id="private-hint" class="hint"></p></div>
+    <p class="hint"><a id="key-console" href="http://127.0.0.1:888/dashboard?tab=keys" target="_blank" rel="noopener noreferrer">打开 Pay 商户接口配置 ↗</a></p>
+    <div class="config-actions"><button id="save-config" type="submit">验证并保存</button><button id="check-config" type="button" class="secondary">测试连接</button><button id="local-config" type="button" class="text-button">使用本地地址</button></div>
+  </fieldset></form><p id="config-message" class="form-message" role="status" aria-live="polite"></p>
+</section>
+<div class="columns">
+<section class="panel"><h2>创建测试订单</h2><form id="create-form"><label for="amount">订单金额（元）</label><input id="amount" value="0.01" inputmode="decimal" pattern="[0-9]+(\.[0-9]{1,2})?" required><label for="channel">收款渠道</label><select id="channel"><option value="alipay">支付宝</option></select><button id="submit" type="submit" disabled>下单并打开收银台</button></form><p id="message" class="form-message" role="status"></p><dl><dt>Pay 接口</dt><dd id="pay-origin">—</dd><dt>测试站接收支付结果</dt><dd id="callback-url">—</dd></dl><p id="config-status" class="hint"></p></section>
+<section class="panel cashier-panel"><div class="panel-head"><h2>Pay 收银台</h2><button id="close-cashier" class="secondary" hidden>关闭</button></div><div id="cashier-empty" class="empty">创建订单后在这里扫码付款</div><iframe id="cashier" title="冰云支付收银台" referrerpolicy="no-referrer" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation" hidden></iframe><div id="payment-success" class="payment-success" role="status" hidden><span class="success-check">✓</span><h2>支付成功</h2><p id="success-amount"></p><p id="success-order"></p><p class="hint">支付结果已通过服务端验签或查询确认</p></div></section>
+</div>
+<section class="panel orders-panel"><div class="panel-head"><h2>测试订单</h2><button id="refresh" class="secondary">刷新</button></div><div id="orders" class="orders"><p class="empty">正在读取</p></div></section>
+<section class="panel logs-panel"><h2>事件日志</h2><p class="hint">下单、接口验证、到账确认与回调记录</p><div id="logs"></div></section>
 </main></body></html>

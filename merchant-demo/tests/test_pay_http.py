@@ -67,23 +67,15 @@ class PayHttpTests(unittest.TestCase):
         with self.mock_client(handle):
             self.assertEqual(request_json("GET", "https://pay.bingyun.vip/health"), ({"error": "pay_unreachable"}, 502))
 
-    def test_native_config_is_independent_and_fetches_public_key_via_httpx(self):
-        public_key = Ed25519PrivateKey.generate().public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo).decode()
+    def test_native_config_defaults_require_explicit_epay_merchant_credentials(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            with patch.object(initialize, "ROOT", root), patch.dict(os.environ, {}, clear=True), \
-                    patch("builtins.print"), \
-                    self.mock_client(lambda _: httpx.Response(200, json={"algorithm": "Ed25519", "public_key": public_key})):
+            root=Path(directory)
+            with patch.object(initialize,'ROOT',root),patch.dict(os.environ,{},clear=True),patch('builtins.print'):
                 initialize.main()
-            env = (root / ".env").read_text()
-            self.assertIn(str(root / "data/demo.sqlite3"), env)
-            self.assertIn("http://127.0.0.1:888", env)
-            self.assertIn("http://127.0.0.1:8100", env)
-            self.assertIn(str(root / "secrets/bypay-public.pem"), env)
-            self.assertEqual((root / "secrets/bypay-public.pem").read_text(), public_key)
-            self.assertEqual((root / ".env").stat().st_mode & 0o777, 0o600)
-            self.assertNotIn("DEMO_PASSWORD", env)
-            self.assertNotIn("DEMO_USER", env)
+            env=(root/'.env').read_text()
+            self.assertIn('PAY_MERCHANT_ID',env);self.assertIn('PAY_API_VERSION',env)
+            self.assertNotIn('PAY_API_KEY',env);self.assertIn('http://127.0.0.1:888',env)
+            self.assertEqual((root/'.env').stat().st_mode & 0o777,0o600)
 
     def test_merchant_does_not_load_parent_pay_env(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
