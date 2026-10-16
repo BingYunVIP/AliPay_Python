@@ -197,6 +197,7 @@ class Store:
             db.execute("UPDATE orders SET provider_notify_url=?,provider_return_url=? WHERE out_trade_no=?", (cfg.get("notify_url", ""), cfg.get("return_url", ""), payload["out_trade_no"]))
             db.execute("UPDATE orders SET payment_config_id=? WHERE out_trade_no=?", (cfg.get("payment_config_id"), payload["out_trade_no"]))
             db.execute("INSERT INTO payment_checks(out_trade_no,next_check) VALUES (?,?)", (payload["out_trade_no"], int(time.time()) + self.setting("poll_interval_seconds", 10)))
+            if hasattr(self,'operations'):self.operations.snapshot(db,user_id,payload['out_trade_no'],payload['amount'])
             if return_token:
                 db.execute("INSERT INTO payment_returns VALUES (?,?,?)", (digest(return_token), payload["out_trade_no"], int(time.time()) + 86400))
         return self.order(payload["out_trade_no"])
@@ -294,6 +295,7 @@ class Store:
             if status in {"TRADE_SUCCESS", "TRADE_FINISHED"}:
                 new_status = order["status"] if order["status"] in {"REFUNDING", "PARTIALLY_REFUNDED", "REFUNDED"} else "PAID"
                 db.execute("UPDATE orders SET status=?,trade_no=?,paid_at=COALESCE(paid_at,?) WHERE out_trade_no=?", (new_status,params["trade_no"], int(time.time()), number))
+                if not order['paid_at'] and hasattr(self,'operations'):self.operations.paid(db,order)
                 if not order["paid_at"] and order["notify_url"]:
                     event_id = str(uuid.uuid4())
                     payload = json.dumps({"id": event_id, "event": "payment.paid", "out_trade_no": number,

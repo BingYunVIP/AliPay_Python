@@ -45,6 +45,10 @@ def install_console(app, store, auth, trace, cfg, ready, ApiError):
         if channel != "all":
             if channel not in {"alipay","wechat","paypal","stripe"}: raise ApiError("invalid_channel_config")
             where += " AND o.channel=?"; args.append(channel)
+        product=request.args.get('product','all')
+        if product!='all':
+            if product not in {'page','wap','app','mini'}:raise ApiError('unsupported_product')
+            where+=' AND o.product=?';args.append(product)
         config_id=request.args.get("config_id","")
         if config_id:
             if not config_id.isdigit(): raise ApiError("invalid_channel_config")
@@ -114,10 +118,38 @@ def install_console(app, store, auth, trace, cfg, ready, ApiError):
             rows = db.execute(f"SELECT o.*,c.name config_name FROM orders o LEFT JOIN channel_configs c ON c.id=o.payment_config_id WHERE {where} ORDER BY o.created_at DESC,o.out_trade_no DESC LIMIT ? OFFSET ?", [*args, size, (page - 1) * size]).fetchall()
         return jsonify(orders=[present_order(row) for row in rows], total=total, page=page, page_size=size)
 
+    def selected_filter(payload):
+        if not isinstance(payload,dict):raise ApiError('invalid_json')
+        where,args=order_filter()
+        ids=payload.get('ids')
+        if payload.get('all_matching') is True:
+            if ids:raise ApiError('invalid_selection')
+        else:
+            if not isinstance(ids,list) or not 1<=len(ids)<=1000 or any(not isinstance(x,str) or len(x)>64 for x in ids):raise ApiError('invalid_selection')
+            ids=list(dict.fromkeys(ids));where+=' AND o.out_trade_no IN ('+','.join('?'*len(ids))+')';args+=ids
+        return where,args
+
+    @app.post('/api/console/orders/batch')
+    @auth(session_only=True)
+    def batch_orders():
+        payload=request.get_json(silent=True);where,args=selected_filter(payload)
+        action=payload.get('action')
+        if action not in {'delete','restore'}:raise ApiError('invalid_action')
+        with store.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            rows=db.execute(f'SELECT o.out_trade_no,o.status FROM orders o WHERE {where} LIMIT 1001',args).fetchall()
+            if len(rows)>1000:raise ApiError('batch_limit_exceeded',422)
+            blocked=[row['out_trade_no'] for row in rows if row['status']=='REFUNDING']
+            changed=[row['out_trade_no'] for row in rows if row['status']!='REFUNDING']
+            for number in changed:db.execute('UPDATE orders SET deleted_at=? WHERE out_trade_no=?',(int(time.time()) if action=='delete' else None,number))
+        trace('order.batch','orders_'+action,{'changed':changed,'skipped':blocked},user_id=g.user['id'])
+        return jsonify(changed=len(changed),skipped=blocked)
+
+    @app.post('/api/console/orders/export')
     @app.get("/api/console/orders/export")
     @auth(session_only=True)
     def export_orders():
-        where, args = order_filter()
+        where, args = selected_filter(request.get_json(silent=True)) if request.method=='POST' else order_filter()
         with store.connect() as db:
             if db.execute(f"SELECT COUNT(*) FROM orders o WHERE {where}", args).fetchone()[0] > 10000:
                 raise ApiError("export_limit_exceeded", 422)
@@ -187,10 +219,10 @@ def install_console(app, store, auth, trace, cfg, ready, ApiError):
         where, args = ("instr(u.email,?)>0", [search]) if search else ("1=1", [])
         with store.connect() as db:
             total = db.execute(f"SELECT COUNT(*) FROM users u WHERE {where}", args).fetchone()[0]
-            rows = db.execute(f"""SELECT u.id,u.email,u.role,u.disabled,u.created_at,k.suffix,m.pid merchant_id,m.mode signature_mode,
+            rows = db.execute(f"""SELECT u.id,u.email,u.role,u.disabled,u.created_at,k.suffix,m.pid merchant_id,m.mode signature_mode,a.review,a.fee_due,a.fee_paid,a.risk_hold,a.risk_reason,
                 (SELECT COUNT(*) FROM orders o WHERE o.user_id=u.id) order_count,
                 (SELECT COALESCE(SUM(CAST(ROUND(CAST(amount AS NUMERIC)*100) AS INTEGER)),0) FROM orders o WHERE o.user_id=u.id AND o.paid_at IS NOT NULL) revenue_cents
-                FROM users u LEFT JOIN api_keys k ON k.user_id=u.id LEFT JOIN merchant_accounts m ON m.user_id=u.id WHERE {where} ORDER BY u.id LIMIT ? OFFSET ?""", [*args, size, (page - 1) * size]).fetchall()
+                FROM users u LEFT JOIN api_keys k ON k.user_id=u.id LEFT JOIN merchant_accounts m ON m.user_id=u.id LEFT JOIN merchant_access a ON a.user_id=u.id WHERE {where} ORDER BY u.id LIMIT ? OFFSET ?""", [*args, size, (page - 1) * size]).fetchall()
         return jsonify(users=[dict(row) for row in rows], total=total, page=page, page_size=size)
 
     @app.post("/api/admin/users")
@@ -204,6 +236,7 @@ def install_console(app, store, auth, trace, cfg, ready, ApiError):
         try: user = store.register(email.strip().lower(), password)
         except sqlite3.IntegrityError: raise ApiError("email_unavailable", 409)
         app.extensions["merchants"].ensure(user["id"])
+        app.extensions["operations"].ensure(user["id"])
         trace("console.user", "user_created", {"target_user_id": user["id"]}, user_id=g.user["id"])
         return jsonify(user=user), 201
 

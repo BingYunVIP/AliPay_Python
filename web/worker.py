@@ -21,6 +21,8 @@ while running:
                               app.extensions["trace"], app.extensions["callback_hosts"], local_origins=app.extensions["callback_local_origins"])
         has_job = app.extensions["reconciler"].tick() or has_job
         has_job = app.extensions["refunds"].tick() or has_job
+        has_job = app.extensions['operations'].tick() or has_job
+        if app.extensions['operations'].rules.read()['jobs_mail']:has_job = app.extensions['mailer'].tick() or has_job
     except Exception as exc:
         app.logger.error("Payment worker error: %s", type(exc).__name__)
         has_job = False

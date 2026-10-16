@@ -32,8 +32,12 @@ class Refunds:
                 if old["status"] in {"SUCCESS","FAILED"} or old["locked_until"] > now: return dict(old)
             else:
                 if not order or order["deleted_at"] or not order["paid_at"] or order["status"] not in {"PAID","PARTIALLY_REFUNDED"}: raise RefundError("order_not_refundable")
+                if hasattr(self.store,'operations') and db.execute('SELECT 1 FROM platform_bills WHERE number=?',(number,)).fetchone():raise RefundError('platform_bill_refund_requires_review')
                 if order["channel"] != "alipay": raise RefundError("refund_channel_unavailable")
                 if Decimal(amount) > Decimal(order["amount"]) - Decimal(order["refunded_amount"]): raise RefundError("refund_exceeds_remaining")
+                if hasattr(self.store,'operations'):
+                    try:self.store.operations.reserve_refund(db,order,refund_no,amount)
+                    except ValueError as exc:raise RefundError(str(exc)) from None
                 db.execute("INSERT INTO refunds(refund_no,out_trade_no,amount,reason,actor,status,created_at) VALUES (?,?,?,?,?,'PENDING',?)", (refund_no,number,amount,reason,actor,now))
             db.execute("UPDATE orders SET status='REFUNDING',active_refund_no=? WHERE out_trade_no=?", (refund_no,number))
             db.execute("UPDATE refunds SET status='PENDING',locked_until=?,next_query=? WHERE refund_no=?", (now+60,now+30,refund_no))
@@ -69,6 +73,7 @@ class Refunds:
             current = db.execute("SELECT status FROM refunds WHERE refund_no=?", (record["refund_no"],)).fetchone()
             if current["status"] in {"SUCCESS","FAILED"}: return
             order = db.execute("SELECT * FROM orders WHERE out_trade_no=?", (record["out_trade_no"],)).fetchone()
+            if hasattr(self.store,'operations'):self.store.operations.finish_refund(db,order,record,status)
             total = Decimal(order["refunded_amount"])
             if status == "SUCCESS": total += Decimal(record["amount"])
             if total > Decimal(order["amount"]): raise RefundError("refund_exceeds_remaining")

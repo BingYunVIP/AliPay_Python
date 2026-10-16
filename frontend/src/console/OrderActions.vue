@@ -5,7 +5,7 @@ import ConfirmDialog from './ConfirmDialog.vue'
 const props = defineProps({ order: Object, details: { type: Boolean, default: true } })
 const c = inject('console'), action = ref(''), busy = ref(false), error = ref(''), refundAmount = ref(''), reason = ref('订单退款'), refundNo = ref('')
 const retrying = ref(false)
-const canRefund = computed(() => isAdmin.value && !props.order.deleted_at && ['PAID', 'PARTIALLY_REFUNDED'].includes(props.order.status) && Number(props.order.refundable_amount) > 0)
+const canRefund = computed(() => (isAdmin.value||c.caps.value?.merchant_refund) && !props.order.deleted_at && ['PAID', 'PARTIALLY_REFUNDED'].includes(props.order.status) && Number(props.order.refundable_amount) > 0)
 function open(name) {
   retrying.value = false
   action.value = name; error.value = ''
@@ -51,8 +51,8 @@ async function queryRefund() {
   <div class="order-row-actions">
     <button v-if="details" class="text-link" @click="c.selectedOrder.value = order">{{ t('详情', 'Details') }}</button>
     <button v-if="canRefund" class="text-link" :disabled="busy" @click="open('refund')">{{ t('退款', 'Refund') }}</button>
-    <button v-if="isAdmin && order.status === 'REFUNDING'" class="text-link" :disabled="busy" @click="queryRefund">{{ t('查询退款', 'Check refund') }}</button>
-    <button v-if="isAdmin && order.status === 'REFUNDING'" class="text-link" :disabled="busy" @click="retryRefund">{{ t('重试原退款', 'Retry original refund') }}</button>
+    <button v-if="(isAdmin || c.caps.value?.merchant_refund) && order.status === 'REFUNDING'" class="text-link" :disabled="busy" @click="queryRefund">{{ t('查询退款', 'Check refund') }}</button>
+    <button v-if="(isAdmin || c.caps.value?.merchant_refund) && order.status === 'REFUNDING'" class="text-link" :disabled="busy" @click="retryRefund">{{ t('重试原退款', 'Retry original refund') }}</button>
     <button v-if="order.deleted_at" class="text-link" :disabled="busy" @click="open('restore')">{{ t('恢复', 'Restore') }}</button>
     <button v-else class="text-link danger-link" :disabled="busy || order.status === 'REFUNDING'" @click="open('delete')">{{ t('删除', 'Delete') }}</button>
   </div>

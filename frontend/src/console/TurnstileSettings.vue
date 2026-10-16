@@ -1,0 +1,8 @@
+<script setup>
+import {onMounted,reactive,ref} from 'vue'
+import {api,errorText} from '../state'
+const cfg=reactive({}),secret=ref(''),hosts=ref(''),busy=ref(false),error=ref(''),notice=ref('')
+onMounted(async()=>{try{Object.assign(cfg,await api('/api/admin/turnstile'));hosts.value=cfg.hostnames.join('\n')}catch(e){error.value=errorText(e)}})
+async function save(){busy.value=true;error.value='';try{const {secret_configured,...data}=cfg;Object.assign(cfg,await api('/api/admin/turnstile',{method:'PUT',body:JSON.stringify({...data,secret_key:secret.value,hostnames:hosts.value.split(/\s+/).filter(Boolean)})}));secret.value='';notice.value='Turnstile 配置已保存'}catch(e){error.value=errorText(e)}finally{busy.value=false}}
+</script>
+<template><form class="hig-card settings-card" @submit.prevent="save"><div class="card-heading"><h3>Cloudflare Turnstile</h3><button class="button" :disabled="busy">保存配置</button></div><label class="check-field"><input v-model="cfg.enabled" type="checkbox"/>启用人机验证</label><div class="policy-form-grid"><label>Site Key<input v-model="cfg.site_key" autocomplete="off"/></label><label>Secret Key<input type="password" v-model="secret" autocomplete="new-password" :placeholder="cfg.secret_configured?'已保存，留空不修改':'填写 Secret Key'"/></label><label class="wide-field">允许验证的域名（每行一个，不含协议和端口）<textarea v-model="hosts" rows="4" placeholder="pay.bingyun.vip&#10;localhost&#10;127.0.0.1"/></label></div><p class="field-hint">启用后登录、注册和发送邮箱验证码都经过服务端验证，请将本地开发域名也加入 Cloudflare 配置</p><p v-if="error" class="error-box" role="alert">{{ error }}</p><p v-if="notice" role="status">{{ notice }}</p></form></template>

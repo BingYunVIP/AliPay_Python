@@ -3,8 +3,10 @@ import { inject, onMounted, ref, computed, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { api, copyText, t } from '../state'
 import Icon from '../components/Icon.vue'
+const props=defineProps({merchantId:[String,Number],embedded:Boolean})
+const selectedVersion=ref('v1')
 const c = inject('console'), route = useRoute(), profile = ref(null), publicKey = ref(''), privateKey = ref(''), reveal = ref(false), busy = ref(false), error = ref(''), notice = ref(''), action = ref(''), dialog = ref(null)
-const endpoint = computed(() => '/api/merchant/config' + (route.query.merchant_id ? '?merchant_id='+encodeURIComponent(route.query.merchant_id) : ''))
+const endpoint = computed(() => '/api/merchant/config' + ((props.merchantId || route.query.merchant_id) ? '?merchant_id='+encodeURIComponent(props.merchantId || route.query.merchant_id) : ''))
 const errors = {invalid_rsa_key:'请输入有效的 RSA 公钥',merchant_public_key_required:'请先配置商户 RSA 公钥'}
 async function load() { try { profile.value = await api(endpoint.value); publicKey.value = profile.value.merchant_public_key } catch (e) { c.report(e) } }
 onMounted(load)
@@ -33,16 +35,16 @@ async function generate() {
 function download() { const url=URL.createObjectURL(new Blob([privateKey.value],{type:'application/x-pem-file'}));const link=document.createElement('a');link.href=url;link.download=`merchant-${profile.value.merchant_id}-private.pem`;link.click();URL.revokeObjectURL(url) }
 </script>
 <template>
-  <div class="console-page-heading"><h2>{{ t('接口配置','Merchant API') }}</h2></div>
+  <div v-if="!embedded" class="console-page-heading"><h2>{{ t('接口配置','Merchant API') }}</h2></div>
   <p v-if="error" class="error-box" role="alert">{{ error }}</p><p v-if="notice" class="field-hint" role="status">{{ notice }}</p>
   <template v-if="profile">
     <section class="hig-card merchant-identity"><label>接口地址<div class="credential-row"><input :value="profile.interface_url" readonly /><button class="icon-button" aria-label="复制接口地址" @click="copy(profile.interface_url)"><Icon name="copy" :size="17"/></button></div></label><label>商户 ID<div class="credential-row"><input :value="profile.merchant_id" readonly/><button class="icon-button" aria-label="复制商户 ID" @click="copy(profile.merchant_id)"><Icon name="copy" :size="17"/></button></div></label></section>
-    <div class="merchant-keys-grid">
-      <section class="hig-card merchant-key-card"><div class="card-heading"><h3>V1 接口 <small>MD5</small></h3><span class="state-badge" :class="profile.signature_mode==='both'?'delivered':'neutral'">{{ profile.signature_mode==='both'?'已开启':'已关闭' }}</span></div>
+    <div class="merchant-version-tabs" role="tablist" aria-label="接口版本"><button type="button" role="tab" :aria-selected="selectedVersion==='v1'" @click="selectedVersion='v1'">V1 · MD5</button><button type="button" role="tab" :aria-selected="selectedVersion==='v2'" @click="selectedVersion='v2'">V2 · RSA</button></div><div class="merchant-keys-grid">
+      <section v-if="selectedVersion==='v1'" class="hig-card merchant-key-card"><div class="card-heading"><h3>V1 接口 <small>MD5</small></h3><span class="state-badge" :class="profile.signature_mode==='both'?'delivered':'neutral'">{{ profile.signature_mode==='both'?'已开启':'已关闭' }}</span></div>
         <label>商户 MD5 密钥<div class="credential-row"><input :type="reveal?'text':'password'" :value="profile.md5_key" readonly autocomplete="off"/><button class="icon-button" :aria-label="reveal?'隐藏密钥':'显示密钥'" @click="reveal=!reveal"><Icon :name="reveal?'eye-off':'eye'" :size="17"/></button><button class="icon-button" aria-label="复制 MD5 密钥" @click="copy(profile.md5_key)"><Icon name="copy" :size="17"/></button></div></label>
         <code class="merchant-endpoint">POST {{ profile.interface_url }}/mapi.php</code><button class="button button-secondary" :disabled="busy" @click="confirm('md5')">重置 MD5 密钥</button>
       </section>
-      <section class="hig-card merchant-key-card"><div class="card-heading"><h3>V2 接口 <small>RSA</small></h3><span class="state-badge" :class="profile.merchant_public_key?'delivered':'neutral'">{{ profile.merchant_public_key?'已配置':'待配置' }}</span></div>
+      <section v-else class="hig-card merchant-key-card"><div class="card-heading"><h3>V2 接口 <small>RSA</small></h3><span class="state-badge" :class="profile.merchant_public_key?'delivered':'neutral'">{{ profile.merchant_public_key?'已配置':'待配置' }}</span></div>
         <label>平台公钥<textarea :value="profile.platform_public_key" readonly rows="4" spellcheck="false"/></label><button class="button button-secondary" @click="copy(profile.platform_public_key)">复制平台公钥</button>
         <label>商户公钥<textarea v-model="publicKey" rows="4" spellcheck="false" placeholder="粘贴已有 RSA 公钥，或生成密钥对"/></label>
         <div class="merchant-key-actions"><button class="button button-secondary" :disabled="busy || !publicKey.trim()" @click="update({merchant_public_key:publicKey})">保存商户公钥</button><button class="button" :disabled="busy" @click="confirm('rsa')">{{ profile.merchant_public_key?'重新生成密钥对':'生成 RSA 密钥对' }}</button></div>
@@ -57,5 +59,5 @@ function download() { const url=URL.createObjectURL(new Blob([privateKey.value],
   </dialog>
 </template>
 <style scoped>
-.merchant-identity,.merchant-key-card,.merchant-mode{padding:24px}.merchant-identity{display:grid;grid-template-columns:2fr 1fr;gap:24px;margin-bottom:20px}.merchant-keys-grid{display:grid;align-items:start;grid-template-columns:1fr 1.35fr;gap:20px}.merchant-key-card label,.merchant-mode label,.merchant-identity label{display:block;font-size:13px}.merchant-key-card label{margin-top:20px}.credential-row{display:flex;align-items:center;gap:8px;margin-top:9px}.credential-row input{min-width:0;flex:1;width:100%}.merchant-key-card textarea{width:100%;box-sizing:border-box;margin:10px 0;font:12px/1.5 monospace;resize:vertical}.merchant-key-card h3 small{font-size:12px;font-weight:400;opacity:.6;margin-left:8px}.merchant-key-card .button{margin-top:12px}.merchant-key-actions{display:flex;gap:10px;flex-wrap:wrap}.merchant-endpoint{display:block;overflow-wrap:anywhere;margin:24px 0;font-size:12px}.merchant-mode{margin-top:20px;max-width:420px}.merchant-mode select{display:block;width:100%;margin-top:12px}@media(max-width:850px){.merchant-identity,.merchant-keys-grid{grid-template-columns:1fr}.merchant-mode{max-width:none}}
+.merchant-identity,.merchant-key-card,.merchant-mode{padding:24px}.merchant-identity{display:grid;grid-template-columns:2fr 1fr;gap:24px;margin-bottom:20px}.merchant-keys-grid{display:grid;align-items:start;grid-template-columns:1fr;gap:20px}.merchant-key-card label,.merchant-mode label,.merchant-identity label{display:block;font-size:13px}.merchant-key-card label{margin-top:20px}.credential-row{display:flex;align-items:center;gap:8px;margin-top:9px}.credential-row input{min-width:0;flex:1;width:100%}.merchant-key-card textarea{width:100%;box-sizing:border-box;margin:10px 0;font:12px/1.5 monospace;resize:vertical}.merchant-key-card h3 small{font-size:12px;font-weight:400;opacity:.6;margin-left:8px}.merchant-key-card .button{margin-top:12px}.merchant-key-actions{display:flex;gap:10px;flex-wrap:wrap}.merchant-endpoint{display:block;overflow-wrap:anywhere;margin:24px 0;font-size:12px}.merchant-mode{margin-top:20px;max-width:420px}.merchant-mode select{display:block;width:100%;margin-top:12px}@media(max-width:850px){.merchant-identity,.merchant-keys-grid{grid-template-columns:1fr}.merchant-mode{max-width:none}}
 </style>

@@ -1,9 +1,8 @@
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted } from 'vue'
 
 // Adapted from ByHome_UI/useCustomHomeMotion: one flight, two sequential legs.
 // Background effects are deliberately absent. At most one pulse is visible.
 export function usePaymentFlow(host) {
-  const paused = ref(false)
   let frame = 0, flight = null, nextFlight = 0, lastFrame = 0, media, observer
   let lastBenefit = -1
   const lastBranch = { in: -1, out: -1 }
@@ -46,7 +45,7 @@ export function usePaymentFlow(host) {
   function tick(now) {
     const root = host.value
     if (!root) { frame = 0; return }
-    if (paused.value || document.hidden || media.matches) {
+    if (document.hidden || media.matches) {
       clear(); frame = 0
       root.dataset.homeMotionState = media.matches ? 'static' : 'paused'
       return
@@ -91,7 +90,7 @@ export function usePaymentFlow(host) {
     clear()
     const root = host.value
     if (!root) return
-    if (paused.value || document.hidden || media.matches) {
+    if (document.hidden || media.matches) {
       root.dataset.homeMotionState = media.matches ? 'static' : 'paused'
       return
     }
@@ -99,7 +98,6 @@ export function usePaymentFlow(host) {
     nextFlight = performance.now() + 350
     frame = requestAnimationFrame(tick)
   }
-  function toggle() { paused.value = !paused.value; sync() }
   onMounted(() => {
     media = window.matchMedia('(prefers-reduced-motion: reduce)')
     observer = new ResizeObserver(sync)
@@ -113,5 +111,5 @@ export function usePaymentFlow(host) {
     media?.removeEventListener('change', sync)
     document.removeEventListener('visibilitychange', sync)
   })
-  return { paused, toggle }
+
 }

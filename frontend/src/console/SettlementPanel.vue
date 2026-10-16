@@ -1,0 +1,10 @@
+<script setup>
+import {onMounted,ref} from 'vue'
+import {api,errorText} from '../state'
+import ConfirmDialog from './ConfirmDialog.vue'
+const rows=ref([]),error=ref(''),selected=ref(null),action=ref(''),reference=ref(''),busy=ref(false)
+async function load(){try{rows.value=(await api('/api/admin/settlements')).settlements}catch(e){error.value=errorText(e)}}
+async function apply(){busy.value=true;error.value='';try{await api(`/api/admin/settlements/${selected.value.id}`,{method:'POST',body:JSON.stringify({action:action.value,reference:reference.value})});selected.value=null;await load()}catch(e){error.value=errorText(e)}finally{busy.value=false}}
+onMounted(load)
+</script>
+<template><div class="console-page-heading"><h2>结算管理</h2><button class="button button-secondary" @click="load">刷新</button></div><p v-if="error" class="error-box" role="alert">{{ error }}</p><section class="hig-card settings-card"><p class="field-hint">完成实际转账后登记凭据，系统不会自动向收款账号转账</p><p v-if="!rows.length">暂无结算申请</p><article v-for="row in rows" :key="row.id" class="settlement-row"><div><b>{{ row.email }}</b><code>{{ row.id }}</code><span>{{ row.beneficiary.channel }} · {{ row.beneficiary.account }} · {{ row.beneficiary.name }}</span></div><div><strong>实付 ￥{{ ((row.gross-row.fee)/100).toFixed(2) }}</strong><small>申请 ￥{{ (row.gross/100).toFixed(2) }} · 手续费 ￥{{ (row.fee/100).toFixed(2) }}</small></div><div v-if="row.status==='pending'" class="inline-actions"><button class="button" @click="selected=row;action='paid';reference=''">登记已出款</button><button class="button button-secondary" @click="selected=row;action='cancel';reference=''">取消申请</button></div><span v-else>{{ row.status==='paid'?'已登记出款':'已取消' }} · {{ row.reference }}</span></article></section><ConfirmDialog :open="!!selected" :busy="busy" :title="action==='paid'?'登记真实出款凭据':'取消结算申请'" :description="action==='paid'?'请先核对实际转账成功，登记后结算冻结金额会记为已出款':'取消后冻结金额返回商户可用余额'" @confirm="apply" @cancel="selected=null"><label v-if="action==='paid'">渠道转账流水号<input v-model="reference" minlength="6" maxlength="128" required/></label><p v-if="error" class="error-box" role="alert">{{ error }}</p></ConfirmDialog></template>

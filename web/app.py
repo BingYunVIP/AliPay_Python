@@ -87,13 +87,20 @@ def create_app(settings=None):
     cfg = LocalProxy(current_config)
     trace = create_trace(store, app.config.get("BYPAY_LOG_FILE", str(Path(app.config["DATABASE"]).parent / "logs/payment.jsonl")))
     signer = WebhookSigner(Path(app.config["DATABASE"]).parent / "webhook-signing.pem")
-    callback_hosts = LocalProxy(lambda: set(site.read()["callback_hosts"]))
+    callback_hosts = LocalProxy(lambda: set(site.read()["callback_hosts"]) | (app.extensions["operations"].callback_hosts() if "operations" in app.extensions else set()))
     callback_local = LocalProxy(lambda: local_callback_origins(site.read()["origin"], app.config.get("BYPAY_LOCAL_CALLBACK_PORT", 8100)))
     store.bootstrap(app.config.get("BYPAY_ADMIN_EMAIL"), app.config.get("BYPAY_ADMIN_PASSWORD"))
     app.extensions.update(store=store, alipay_config=base_cfg, channels=channels, site_settings=site, webhook_signer=signer, trace=trace, callback_hosts=callback_hosts, callback_local_origins=callback_local)
     from .merchants import Merchants
     merchants = Merchants(store, site)
     app.extensions["merchants"] = merchants
+    from .mailing import Mailer,email_address
+    from .operations import Operations
+    from .antibot import AntiBot
+    mailer=Mailer(store,merchants.cipher,trace)
+    operations=Operations(store,mailer,trace)
+    antibot=AntiBot(store,merchants.cipher)
+    app.extensions.update(mailer=mailer,operations=operations,antibot=antibot)
     secure = app.config["PUBLIC_BASE_URL"].startswith("https://")
     cookie_name = "__Host-bypay_session" if secure else "bypay_session"
     origin = app.config["PUBLIC_BASE_URL"].rstrip("/")
@@ -180,7 +187,9 @@ def create_app(settings=None):
 
     @app.before_request
     def limit_body_size():
-        if request.content_length and request.content_length > app.config["MAX_CONTENT_LENGTH"]:
+        maximum=262144 if request.path in {'/api/admin/mail/template','/api/admin/mail/preview','/api/admin/mail/test'} else app.config['MAX_CONTENT_LENGTH']
+        request.max_content_length=maximum
+        if request.content_length and request.content_length > maximum:
             raise RequestEntityTooLarge()
 
     @app.after_request
@@ -188,6 +197,10 @@ def create_app(settings=None):
         response.headers.update({"X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY",
                                  "Referrer-Policy": "no-referrer", "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
                                  "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src https://openapi.alipay.com https://unitradeprod.alipay.com https://excashier.alipay.com https://openapi-sandbox.dl.alipaydev.com https://excashier-sandbox.dl.alipaydev.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"})
+        # A SPA may navigate to login after settings change without loading a new document
+        csp=response.headers['Content-Security-Policy']
+        csp=csp.replace("script-src 'self'", "script-src 'self' https://challenges.cloudflare.com").replace("frame-src ","frame-src https://challenges.cloudflare.com ").replace("connect-src 'self'", "connect-src 'self' https://challenges.cloudflare.com")
+        response.headers['Content-Security-Policy']=csp
         if getattr(g, 'cashier_parent', None):
             response.headers.pop('X-Frame-Options', None)
             response.headers['Content-Security-Policy'] = response.headers['Content-Security-Policy'].replace("frame-ancestors 'none'", "frame-ancestors 'self' " + g.cashier_parent)
@@ -202,7 +215,7 @@ def create_app(settings=None):
     def api_error(exc):
         if request.path.startswith("/api/v1/payments") and request.method == "POST" and getattr(g, "user", None):
             trace("request.rejected", exc.code, number=getattr(g, "order_number", None), user_id=g.user["id"], accepted=False)
-        response = jsonify(error=exc.code)
+        response = jsonify(error=exc.code, message=operations.rules.read()['blocked_message'] if exc.code=='product_blocked' else None)
         if exc.status == 429:
             response.headers["Retry-After"] = "60"
         return response, exc.status
@@ -243,7 +256,9 @@ def create_app(settings=None):
                        channel_enabled=store.setting("alipay_enabled", True), max_amount=store.setting("max_amount", money(app.config["TEST_MAX_AMOUNT"])),
                        automatic_verification=True, notification_configured=bool(cfg["notify_url"]),
                        payment_configs=[{k: item[k] for k in ("id", "config_id", "name", "enabled", "configured", "integrated", "is_default")} | {"environment": item["fields"].get("env")} for item in available],
-                       preview=app.config.get("BYPAY_UI_PREVIEW") == "1")
+                       email_verification=mailer.config()['registration_code'],turnstile={k:antibot.public()[k] for k in ('enabled','site_key')},
+                       registration_review=operations.rules.read()['registration_review'],registration_paid=operations.rules.read()['registration_paid'],registration_fee=operations.rules.read()['registration_fee'],
+                       merchant_refund=operations.rules.read()['merchant_refund'],preview=app.config.get("BYPAY_UI_PREVIEW") == "1")
 
     @app.get("/api/webhooks/public-key")
     def webhook_public_key():
@@ -254,15 +269,18 @@ def create_app(settings=None):
         if action not in {"login", "register"}:
             raise ApiError("not_found", 404)
         same_origin()
-        limit("auth-ip:" + str(request.remote_addr), 20, 600)
+        ip=operations.rules.client_ip(request)
+        limit("auth-ip:" + ip, 20, 600)
         payload = json_body()
+        try:antibot.verify(payload.get('turnstile_token'),ip,action)
+        except ValueError as exc:raise ApiError(str(exc),403) from None
         email, password = payload.get("email", ""), payload.get("password", "")
         if not isinstance(email, str) or not isinstance(password, str) or len(email) > 254 or not 1 <= len(password) <= 128:
             raise ApiError("invalid_credentials")
         email = email.strip().lower()
         if not email or re.search(r"\s|[\x00-\x1f\x7f]", email):
             raise ApiError("invalid_credentials", 401)
-        if action == "register" and not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+        if action == "register" and not email_address(email):
             raise ApiError("invalid_email")
         limit("auth-email:" + email, 10, 600)
         if action == "register":
@@ -271,8 +289,14 @@ def create_app(settings=None):
             if len(password) < 12:
                 raise ApiError("password_too_short")
             try:
+                inviter=operations.inviter(payload.get('invite_code',''))
+                if mailer.config()['registration_code']:mailer.consume_code(email,payload.get('email_code',''))
+            except ValueError as exc:raise ApiError(str(exc)) from None
+            try:
                 user = store.register(email, password)
                 merchants.ensure(user["id"])
+                operations.ensure(user['id'],new=True,inviter=inviter)
+                if mailer.config()['notify_registration']:mailer.enqueue('registration',email,{'message':'账户已创建，请登录控制台查看商户接入状态'},'registration:'+str(user['id']))
             except sqlite3.IntegrityError:
                 raise ApiError("email_unavailable", 409)
         else:
@@ -293,7 +317,7 @@ def create_app(settings=None):
     @app.get("/api/auth/me")
     @auth(session_only=True)
     def me():
-        return jsonify(user=user_info(g.user), csrf_token=g.user["csrf"], api_key=store.key_info(g.user["id"]))
+        return jsonify(user=user_info(g.user), csrf_token=g.user["csrf"], api_key=store.key_info(g.user["id"]), access=operations.access(g.user["id"]))
 
     @app.post("/api/auth/logout")
     @auth(session_only=True)
@@ -338,9 +362,10 @@ def create_app(settings=None):
         return jsonify(ok=True)
 
     @app.post("/api/v1/payments/<number>/refund")
-    @auth(session_only=True, admin=True)
+    @auth(session_only=True)
     def refund_payment(number):
         owned_order(number)
+        if g.user['role']!='admin' and not operations.rules.read()['merchant_refund']:raise ApiError('merchant_refund_disabled',403)
         payload = json_body()
         refund_no, reason = payload.get("refund_no"), payload.get("reason", "订单退款")
         if not isinstance(refund_no, str) or not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", refund_no): raise ApiError("invalid_refund_number")
@@ -351,8 +376,9 @@ def create_app(settings=None):
         return jsonify(refund=record,order=public_order(store.order(number))), 202 if record["status"] in {"PENDING","UNKNOWN"} else 200
 
     @app.post("/api/v1/payments/<number>/refund-status")
-    @auth(session_only=True, admin=True)
+    @auth(session_only=True)
     def refund_status(number):
+        if g.user['role']!='admin' and not operations.rules.read()['merchant_refund']:raise ApiError('merchant_refund_disabled',403)
         order=owned_order(number)
         limit("refund-query:"+number,6)
         record=refunds.sync(order["active_refund_no"]) if order["active_refund_no"] else None
@@ -423,7 +449,7 @@ def create_app(settings=None):
     def create_payment():
         return create_payment_request(json_body())
 
-    def create_payment_request(payload):
+    def create_payment_request(payload,internal=False):
         number, subject = payload.get("out_trade_no"), payload.get("subject")
         if not isinstance(number, str) or not re.fullmatch(r"[A-Za-z0-9_-]{6,64}", number):
             raise ApiError("invalid_order_number")
@@ -472,6 +498,9 @@ def create_app(settings=None):
         if existing:
             matching(existing)
             if existing["pay_url"] or json.loads(existing["payment_payload"]) or existing["status"] != "CREATED": return replay(existing)
+        if not existing and not internal:
+            try:operations.precheck(g.user['id'],payload['subject'],payload['amount'],notify_url,number,operations.rules.client_ip(request),admin=g.user['role']=='admin')
+            except ValueError as exc:raise ApiError(str(exc),403) from None
         if not existing and not store.setting("alipay_enabled", True):
             raise ApiError("channel_disabled", 403)
         policy = site.read()
@@ -688,5 +717,7 @@ def create_app(settings=None):
 
     from .epay import install_epay
     install_epay(app, merchants, auth, trace, create_payment_request, prepare_qr_request, ApiError)
+    from .platform_api import install_platform
+    install_platform(app,auth,create_payment_request,ApiError,same_origin)
     install_console(app, store, auth, trace, cfg, ready, ApiError)
     return app

@@ -34,6 +34,7 @@ export async function api(path, options = {}) {
     if (response.status === 401) { auth.user = null; auth.csrf = ''; auth.key = null }
     const error = new ApiError(data.error || 'request_failed', response.status)
     error.field = data.field
+    error.serverMessage=data.message
     throw error
   }
   return data
@@ -47,6 +48,28 @@ export function initializeAuth() {
 }
 
 export const errors = {
+  registration_review_required:['商户尚未通过审核，请在账户中心查看进度','Merchant review is required'],
+  registration_payment_required:['请先完成注册付费','Registration payment is required'],
+  invalid_email_code:['验证码无效、已使用或已过期','Invalid or expired email code'],
+  human_verification_required:['请先完成人机验证','Complete the human verification'],
+  human_verification_failed:['人机验证失败，请重新验证','Human verification failed'],
+  smtp_test_failed:['测试邮件发送失败，请检查 SMTP 地址、授权码和服务器日志','SMTP test failed'],
+  smtp_disabled:['请先启用并保存邮箱配置','Enable SMTP first'],
+  smtp_credentials_required:['请填写发件地址、SMTP 账号与授权码','Complete SMTP credentials'],
+  turnstile_configuration_required:['请填写 Turnstile Site Key、Secret Key 和验证域名','Complete Turnstile settings'],
+  merchant_risk_hold:['商户收款因风控规则暂停，请联系管理员','Merchant risk hold'],
+  deposit_required:['请先在账户中心缴纳足额保证金','Merchant deposit is required'],
+  domain_not_authorized:['支付域名尚未通过审核','Payment domain is not approved'],
+  refund_balance_insufficient:['可用或待结算余额不足以预留退款金额','Insufficient funds to reserve this refund'],
+  merchant_refund_disabled:['平台未开启商户自助退款','Merchant refunds are disabled'],
+  batch_limit_exceeded:['单次最多处理 1000 笔，请缩小筛选范围','Limit selection to 1000 orders'],
+  invalid_selection:['请选择要操作的订单','Select orders'],
+  settlement_balance_insufficient:['金额不足最低结算金额或超过可用余额','Insufficient settlement balance'],
+  beneficiary_required:['请先保存结算账户','Save a beneficiary first'],
+  deposit_still_frozen:['保证金仍在冻结期或存在待处理交易','Deposit is still frozen'],
+  platform_bill_refund_requires_review:['注册费和保证金不通过普通商户退款入口退回，请联系管理员','Platform bills require separate review'],
+  settlement_balance_changed:['账户余额或风控状态已变化，请重新核对后处理结算','The balance or risk state has changed'],
+  product_blocked:['该商品暂不支持支付','This product is not supported'],
   network_error: ['连接服务失败，请检查网络后重试。', 'Unable to reach the service. Please retry.'],
   invalid_credentials: ['邮箱或密码不正确。', 'Incorrect email or password.'],
   invalid_email: ['请输入有效的邮箱地址。', 'Enter a valid email address.'],
@@ -95,7 +118,7 @@ export const errors = {
   channel_config_locked: ['无法读取加密配置，请检查服务器渠道主密钥文件', 'Unable to decrypt channel configuration; check the server master key'],
   alipay_public_key_is_app_key: ['这里填成了应用公钥，请改填支付宝提供的公钥', 'This is your app public key; use the public key supplied by Alipay'],
 }
-export const errorText = (error) => t(...(errors[error.message] || ['操作未完成，请稍后重试', 'The request could not be completed — please retry'])).replace(/[。！？.!?]+$/u, '')
+export const errorText = (error) => (error.serverMessage || t(...(errors[error.message] || ['操作未完成，请稍后重试', 'The request could not be completed — please retry']))).replace(/[。！？.!?]+$/u, '')
 export async function copyText(value) {
   await navigator.clipboard.writeText(value)
 }

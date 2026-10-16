@@ -9,7 +9,7 @@ import { usePaymentFlow } from '../composables/usePaymentFlow'
 const copied = ref(false)
 const copyFailed = ref(false)
 const motionRoot = ref(null)
-const { paused, toggle } = usePaymentFlow(motionRoot)
+usePaymentFlow(motionRoot)
 const product = ref('page')
 let copyTimer
 const origin = window.location.origin
@@ -69,7 +69,6 @@ onBeforeUnmount(() => clearTimeout(copyTimer))
             <span class="byh-lights" aria-hidden="true"><i></i><i></i><i></i></span>
             <span class="byh-title"><Icon name="terminal" :size="16" />Terminal</span>
             <div class="terminal-tools">
-              <button class="terminal-copy" @click="toggle" :aria-label="paused ? t('播放动效', 'Play motion') : t('暂停动效', 'Pause motion')" :aria-pressed="paused" :title="paused ? t('播放动效', 'Play motion') : t('暂停动效', 'Pause motion')"><Icon :name="paused ? 'play' : 'pause'" :size="14" /></button>
               <button class="terminal-copy" @click="copy" :aria-label="t('复制 curl 代码', 'Copy curl command')" :title="t('复制代码', 'Copy code')"><Icon :name="copied ? 'check' : 'copy'" :size="14" /></button>
             </div>
           </div>

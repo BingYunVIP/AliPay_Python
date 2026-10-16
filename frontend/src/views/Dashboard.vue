@@ -12,6 +12,8 @@ provide('console', c)
 const compact = ref(false), mobileNav = ref(null), quickSearch = ref('')
 const panels = {
   overview: OverviewPanel,
+  account:defineAsyncComponent(()=>import('../console/AccountPanel.vue')),
+  settlements:defineAsyncComponent(()=>import('../console/SettlementPanel.vue')),
   channels: defineAsyncComponent(() => import('../console/ChannelsPanel.vue')),
   testpay: defineAsyncComponent(() => import('../console/PaymentPanel.vue')),
   orders: defineAsyncComponent(() => import('../console/OrdersPanel.vue')),

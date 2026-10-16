@@ -107,7 +107,7 @@ def install_epay(app, merchants, auth, trace, create_payment, prepare_qr, ApiErr
                 except (ApiError,ValueError) as exc:
                     code = exc.code if isinstance(exc,ApiError) else str(exc)
                     trace('merchant.request','epay_request_rejected',{'action':action,'version':version,'error':code},user_id=getattr(g,'user',{}).get('id'),accepted=False)
-                    return result({'code':-3 if code in {'invalid_signature','merchant_unavailable','rsa_required'} else -1,'msg':messages.get(code,code),'error':code},version)
+                    return result({'code':-3 if code in {'invalid_signature','merchant_unavailable','rsa_required'} else -1,'msg':app.extensions['operations'].rules.read()['blocked_message'] if code=='product_blocked' else messages.get(code,code),'error':code},version)
             return wrapped
         return decorate
 
@@ -158,7 +158,8 @@ def install_epay(app, merchants, auth, trace, create_payment, prepare_qr, ApiErr
 
     def info(account):
         with store.connect() as db: count=db.execute('SELECT count(*) FROM merchant_orders WHERE user_id=?',(account['user_id'],)).fetchone()[0]
-        return {'pid':account['pid'],'status':1,'pay_status':1,'order_num':count}
+        access=app.extensions['operations'].access(account['user_id'])
+        return {'pid':account['pid'],'status':1,'pay_status':int(access['ready']),'order_num':count}
 
     @app.post('/api/merchant/info')
     @endpoint('v2','info')
@@ -189,7 +190,7 @@ def install_epay(app, merchants, auth, trace, create_payment, prepare_qr, ApiErr
             raise ApiError('unsupported_method')
         except (ApiError,ValueError) as exc:
             code=exc.code if isinstance(exc,ApiError) else str(exc)
-            return result({'code':-3,'msg':messages.get(code,code),'error':code},'v1')
+            return result({'code':-3,'msg':app.extensions['operations'].rules.read()['blocked_message'] if code=='product_blocked' else messages.get(code,code),'error':code},'v1')
 
     def checkout(token):
         value=merchants.cashier(token)

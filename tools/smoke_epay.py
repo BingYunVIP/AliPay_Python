@@ -75,6 +75,7 @@ def run():
                 merchant.locator('#email').fill('smoke-merchant@example.test');merchant.locator('#password').fill('Fixture-password-123');merchant.locator('form button.button').click()
                 merchant.wait_for_url('**/dashboard')
                 merchant.goto(pay_origin+'/dashboard?tab=keys');merchant.wait_for_load_state('networkidle')
+                merchant.get_by_role('tab',name='V2 · RSA').click()
                 expect(merchant.get_by_role('button',name='生成 RSA 密钥对',exact=True)).to_be_visible()
                 merchant.get_by_role('button',name='生成 RSA 密钥对',exact=True).click()
                 merchant.locator('dialog').get_by_role('button',name='确认生成',exact=True).click()

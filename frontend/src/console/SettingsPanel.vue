@@ -2,6 +2,11 @@
 import { computed, inject, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { api, errorText, t } from '../state'
 import Icon from '../components/Icon.vue'
+import PolicySettings from './PolicySettings.vue'
+import MailSettings from './MailSettings.vue'
+import TurnstileSettings from './TurnstileSettings.vue'
+import TaskSettings from './TaskSettings.vue'
+const section=ref('site')
 
 const c = inject('console'), diagnostics = ref(null), checking = ref(false)
 const groups = reactive({ access: {}, timing: {}, routing: {}, callback: {} })
@@ -58,7 +63,9 @@ onMounted(check)
 </script>
 <template>
   <div class="console-page-heading"><div><h2>{{ t('系统管理', 'System settings') }}</h2><p>{{ t('管理交易规则、站点地址与支付通知', 'Manage payment rules, site addresses, and notifications') }}</p></div></div>
-  <div class="settings-grid settings-layout">
+  <div class="settings-section-tabs" role="tablist" aria-label="系统设置分类"><button v-for="item in [['site','站点与订单'],['policy','商户与资金规则'],['mail','邮箱与模板'],['human','人机验证'],['tasks','计划任务']]" :key="item[0]" role="tab" :aria-selected="section===item[0]" @click="section=item[0]">{{ item[1] }}</button></div>
+  <PolicySettings v-if="section==='policy'"/><MailSettings v-else-if="section==='mail'"/><TurnstileSettings v-else-if="section==='human'"/><TaskSettings v-else-if="section==='tasks'"/>
+  <div v-else class="settings-grid settings-layout">
     <form class="hig-card settings-card settings-access" @submit.prevent="save('access')" @input="changed('access')">
       <div class="card-heading"><div><h3>{{ t('访问与交易', 'Access & payments') }}</h3><p>{{ t('管理账户注册与单笔限额', 'Account registration and per-order limit') }}</p></div><Icon name="settings" :size="19" /></div>
       <div class="setting-switch-row"><div><b>{{ t('开放用户注册', 'Allow registration') }}</b><p>{{ t('允许新用户创建普通账户', 'Allow new users to create accounts') }}</p></div><button type="button" class="hig-switch" role="switch" :aria-checked="!!groups.access.registration" :aria-label="t('开放用户注册', 'Allow registration')" :disabled="busy.access" @click="groups.access.registration = !groups.access.registration; changed('access')"><span></span></button></div>
