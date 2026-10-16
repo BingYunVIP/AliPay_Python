@@ -1,11 +1,13 @@
 """Ported payment/refund rules from Epay/includes/lib/Order.php::refund_info/refund
-and Epay/plugins/alipay/alipay_plugin.php::refund. SQLite reservations and stable
-out_request_no additionally protect concurrent requests and uncertain responses.
+and Epay/plugins/alipay/alipay_plugin.php::refund (Alipay) and plugins/wxpayn/wxpayn_plugin.php::refund (WeChat Pay).
+SQLite reservations and stable out_request_no / out_refund_no additionally protect concurrent requests and uncertain responses.
 """
 import time
 from decimal import Decimal
 from bypay.alipay_client import AlipayClient
 from bypay.payment_validation import money
+from bypay.wechat_client import REFUND_REFUSALS, WechatClient, WechatError
+from .platform_rules import cents
 
 
 class RefundError(ValueError):
@@ -13,8 +15,8 @@ class RefundError(ValueError):
 
 
 class Refunds:
-    def __init__(self, store, channels, trace, factory=AlipayClient):
-        self.store, self.channels, self.trace, self.factory = store, channels, trace, factory
+    def __init__(self, store, channels, trace, factory=AlipayClient, wechat_factory=WechatClient):
+        self.store, self.channels, self.trace, self.factory, self.wechat_factory = store, channels, trace, factory, wechat_factory
 
     def get(self, refund_no):
         with self.store.connect() as db:
@@ -33,7 +35,7 @@ class Refunds:
             else:
                 if not order or order["deleted_at"] or not order["paid_at"] or order["status"] not in {"PAID","PARTIALLY_REFUNDED"}: raise RefundError("order_not_refundable")
                 if hasattr(self.store,'operations') and db.execute('SELECT 1 FROM platform_bills WHERE number=?',(number,)).fetchone():raise RefundError('platform_bill_refund_requires_review')
-                if order["channel"] != "alipay": raise RefundError("refund_channel_unavailable")
+                if order["channel"] not in {"alipay", "wechat"}: raise RefundError("refund_channel_unavailable")
                 if Decimal(amount) > Decimal(order["amount"]) - Decimal(order["refunded_amount"]): raise RefundError("refund_exceeds_remaining")
                 if hasattr(self.store,'operations'):
                     try:self.store.operations.reserve_refund(db,order,refund_no,amount)
@@ -46,6 +48,11 @@ class Refunds:
         try:
             cfg = self.channels.payment_config(dict(order))
             if cfg["app_id"] != order["app_id"] or cfg["seller_id"] != order["seller_id"]: raise ValueError("payment_mismatch")
+            if order["channel"] == "wechat":
+                result = self.wechat_factory(cfg).refund(number, refund_no, cents(amount), cents(order["amount"]), reason, transaction_id=order["trade_no"] or "")
+                self.trace("refund.response", "wechat_refund_response", result, number, actor, result["status"] == "SUCCESS")
+                self._settle_wechat(record, order, result)
+                return self.get(refund_no)
             result = self.factory(cfg).refund(number,amount,reason,out_request_no=refund_no,trade_no=order["trade_no"])
             self.trace("refund.response", "refund_response_received", result.get("sdk_response",result),number,actor,result.get("is_success",False))
             if result.get("is_success"):
@@ -54,10 +61,27 @@ class Refunds:
                 # Only a signed, definitive business rejection releases the reservation.
                 uncertain = result.get("code") not in {"40002","40004"} or any(term in result.get("sub_code","").upper() for term in ("SYSTEM", "TIMEOUT", "UNKNOWN"))
                 self._finish(record, "UNKNOWN" if uncertain else "FAILED", "refund_provider_error")
+        except WechatError as exc:
+            # only WeChat Pay's own refusal releases the reservation; a bare 4xx from a proxy or a timeout may still have been processed
+            definitive = 400 <= exc.status < 500 and exc.provider_code in REFUND_REFUSALS
+            self._finish(record, "FAILED" if definitive else "UNKNOWN", exc.code if definitive else "refund_unconfirmed")
+            self.trace("refund.rejected" if definitive else "refund.unconfirmed", "refund_provider_error" if definitive else "refund_unconfirmed", {"refund_no": refund_no, "provider_code": exc.provider_code, "status": exc.status}, number, actor, False)
         except Exception as exc:
             self._finish(record,"UNKNOWN","refund_unconfirmed")
             self.trace("refund.unconfirmed", "refund_unconfirmed", {"refund_no":refund_no,"exception_type":type(exc).__name__},number,actor,False)
         return self.get(refund_no)
+
+    def _settle_wechat(self, record, order, result):
+        """WeChat Pay: SUCCESS confirms; PROCESSING and ABNORMAL stay reserved and are queried or handled by hand; CLOSED ends it."""
+        status = result.get("status")
+        if status == "SUCCESS":
+            if result.get("out_refund_no") != record["refund_no"] or result.get("amount_refund") != cents(record["amount"]) or (order["trade_no"] and result.get("transaction_id") != order["trade_no"]):
+                raise ValueError("refund_mismatch")
+            self._finish(record, "SUCCESS")
+        elif status == "CLOSED":
+            self._finish(record, "FAILED", "refund_provider_error")
+        else:
+            self._finish(record, "UNKNOWN", "refund_processing" if status == "PROCESSING" else "refund_abnormal")
 
     def _accept(self, record, result, query):
         order = self.store.order(record["out_trade_no"])
@@ -91,6 +115,11 @@ class Refunds:
         if not claimed: return self.get(refund_no)
         try:
             order=self.store.order(record["out_trade_no"])
+            if order["channel"] == "wechat":
+                result=self.wechat_factory(self.channels.payment_config(order)).query_refund(refund_no)
+                self.trace("refund.query", "wechat_refund_query_received", result, order["out_trade_no"], order["user_id"], result["status"] == "SUCCESS")
+                self._settle_wechat(record, order, result)
+                return self.get(refund_no)
             result=self.factory(self.channels.payment_config(order)).query_refund(order["out_trade_no"],refund_no)
             self.trace("refund.query", "refund_query_received", result.get("sdk_response",result),order["out_trade_no"],order["user_id"],result.get("is_success",False))
             self._accept(record,result,query=True)

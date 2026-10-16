@@ -10,6 +10,8 @@ from flask import Response, g, jsonify, redirect, request
 
 from bypay.epay_protocol import signed, verify
 from bypay.payment_validation import money
+from bypay.wechat_client import WechatError
+from .merchants import EPAY_CHANNELS
 from .webhooks import validate_callback
 
 
@@ -95,7 +97,7 @@ def install_epay(app, merchants, auth, trace, create_payment, prepare_qr, ApiErr
 
     messages = {'invalid_signature':'签名校验失败，请检查商户 ID 和签名密钥','merchant_unavailable':'商户不存在或已停用',
                 'rsa_required':'此商户仅允许 RSA 签名','order_not_found':'订单号不存在','order_conflict':'同一商户订单号的参数发生变化',
-                'channel_not_integrated':'该收款渠道尚未接入','payment_not_configured':'支付宝渠道尚未配置','invalid_merchant_callback':'商户回调地址未获允许'}
+                'channel_not_integrated':'该收款渠道尚未接入','payment_not_configured':'收款渠道尚未配置','wechat_https_required':'微信支付需要平台使用公网 HTTPS 站点地址','wechat_no_auth':'微信支付商户号未开通该产品','wechat_app_id_mismatch':'微信支付 AppID 与商户号未绑定','invalid_merchant_callback':'商户回调地址未获允许'}
     def endpoint(version, action):
         def decorate(fn):
             @wraps(fn)
@@ -117,8 +119,9 @@ def install_epay(app, merchants, auth, trace, create_payment, prepare_qr, ApiErr
         name=params.get('name','').strip()
         if not 1<=len(name)<=127: raise ApiError('invalid_subject')
         amount=money(params.get('money',''))
-        channel=params.get('type','alipay')
-        if channel!='alipay': raise ApiError('channel_not_integrated')
+        epay_type=params.get('type','alipay')
+        channel=EPAY_CHANNELS.get(epay_type)
+        if not channel: raise ApiError('channel_not_integrated')
         callback=params.get('notify_url','')
         parsed=validate_callback(callback,app.extensions['callback_hosts'],app.extensions['callback_local_origins'])
         return_url=params.get('return_url','')
@@ -130,10 +133,11 @@ def install_epay(app, merchants, auth, trace, create_payment, prepare_qr, ApiErr
         if params.get('clientip'):
             try: ipaddress.ip_address(params['clientip'])
             except ValueError: raise ApiError('invalid_client_ip') from None
-        normalized={**params,'name':name,'money':amount,'type':channel}
+        normalized={**params,'name':name,'money':amount,'type':epay_type}
         record=merchants.reserve(account,normalized,version)
         number=record['platform_no']
-        response=app.make_response(create_payment({'out_trade_no':number,'subject':name,'amount':amount,'channel':channel,'product':'page','notify_url':callback}))
+        try: response=app.make_response(create_payment({'out_trade_no':number,'subject':name,'amount':amount,'channel':channel,'product':'page','notify_url':callback}))
+        except WechatError as exc: raise ApiError(exc.code) from None  # the merchant gets the same envelope as for any other refusal
         if response.status_code>=400: raise ApiError((response.get_json(silent=True) or {}).get('error','payment_creation_failed'))
         url=merchants.checkout_url(record,public_origin())
         trace('merchant.create','epay_order_created',{'pid':account['pid'],'merchant_order_no':merchant_no,'version':version},number,account['user_id'])

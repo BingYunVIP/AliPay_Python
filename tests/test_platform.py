@@ -222,6 +222,21 @@ class PlatformTests(unittest.TestCase):
         with self.store.connect() as db:db.execute('UPDATE deposits SET release_at=0')
         self.ops.release_deposit(self.user,bill['out_trade_no']);self.assertEqual(self.balances()['available'],'10.00');self.balanced()
 
+    def test_admin_settlement_list_filters_by_status_and_totals_cover_every_row(self):
+        self.policy(settlement_days=0,settlement_mode='manual',settlement_rate='1.00',settlement_daily_limit=5)
+        row=self.create().json['order'];self.paid(row);self.ops.tick()
+        self.ops.beneficiary(self.user,{'channel':'alipay','account':'payer@example.test','name':'测试用户'})
+        first=self.ops.settlement(self.user,'20.00');second=self.ops.settlement(self.user,'30.00')
+        self.ops.finish_settlement(first,'paid','REAL_TRANSFER_FIXTURE_002')
+        everything=self.admin.get('/api/admin/settlements').json
+        self.assertEqual(sorted(item['status'] for item in everything['settlements']),['paid','pending'])
+        self.assertEqual(everything['totals'],{'paid':{'count':1,'gross':2000,'fee':20},'pending':{'count':1,'gross':3000,'fee':30}})
+        waiting=self.admin.get('/api/admin/settlements?status=pending').json
+        self.assertEqual([item['id'] for item in waiting['settlements']],[second])
+        self.assertEqual(waiting['totals'],everything['totals'])  # the filter narrows the list, not the totals
+        self.assertEqual(self.admin.get('/api/admin/settlements?status=bogus').status_code,400)
+        self.assertEqual(self.client.get('/api/admin/settlements').status_code,403)
+
     def test_settlement_freezes_balance_cancellation_and_verified_reference(self):
         self.policy(settlement_days=0,settlement_mode='manual',settlement_rate='1.00',settlement_daily_limit=3)
         row=self.create().json['order'];self.paid(row);self.ops.tick()

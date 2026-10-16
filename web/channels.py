@@ -11,7 +11,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from bypay.constants import GATEWAY_BY_ENV
-from bypay.key_utils import normalize_private_key, normalize_public_key
+from bypay.key_utils import KeyProblem, load_private_key, load_public_key
 
 FIELDS = {
     "alipay": {"env", "app_id", "seller_id", "app_private_key", "alipay_public_key"},
@@ -19,19 +19,20 @@ FIELDS = {
     "paypal": {"env", "client_id", "client_secret", "webhook_id"},
     "stripe": {"publishable_key", "secret_key", "webhook_secret"},
 }
+INTEGRATED = {"alipay", "wechat"}
 SECRETS = {"app_private_key", "alipay_public_key", "api_v3_key", "merchant_private_key", "platform_public_key", "client_secret", "secret_key", "webhook_secret"}
 REQUIRED = {
     "alipay": {"app_id", "seller_id", "app_private_key", "alipay_public_key"},
-    "wechat": {"app_id", "mch_id", "certificate_serial", "api_v3_key", "merchant_private_key"},
+    "wechat": {"app_id", "mch_id", "certificate_serial", "api_v3_key", "merchant_private_key", "platform_public_key", "platform_public_key_id"},
     "paypal": {"client_id", "client_secret"},
     "stripe": {"secret_key", "webhook_secret"},
 }
 
 
 class ChannelError(ValueError):
-    def __init__(self, code, field=None):
+    def __init__(self, code, field=None, reason=None):
         super().__init__(code)
-        self.field = field
+        self.field, self.reason = field, reason
 
 
 class ChannelStore:
@@ -110,7 +111,7 @@ class ChannelStore:
     def describe(self, channel, config_id=None):
         record = self.config(config_id, channel)
         cfg, version, updated = self.get(channel, record["id"])
-        return {"id": channel, "config_id": record["id"], "name": record["name"], "enabled": bool(record["enabled"]), "is_default": bool(record["is_default"]), "revision": record["revision"], "version": version, "updated_at": updated, "integrated": channel == "alipay",
+        return {"id": channel, "config_id": record["id"], "name": record["name"], "enabled": bool(record["enabled"]), "is_default": bool(record["is_default"]), "revision": record["revision"], "version": version, "updated_at": updated, "integrated": channel in INTEGRATED,
                 "configured": all(cfg.get(key) for key in REQUIRED[channel]),
                 "fields": {key: cfg.get(key, "") for key in sorted(FIELDS[channel] - SECRETS)},
                 "secrets": {key: bool(cfg.get(key)) for key in sorted(FIELDS[channel] & SECRETS)},
@@ -121,9 +122,12 @@ class ChannelStore:
         env = cfg.get("env", "sandbox")
         if channel in {"alipay", "paypal"} and env not in {"sandbox", "production"}:
             raise ChannelError("invalid_channel_field", "env")
+        if channel == "wechat" and cfg.get("certificate_serial"):
+            # `openssl x509 -serial` prints "serial=4C3B…"; people also paste colon-separated hex
+            cfg["certificate_serial"] = re.sub(r"[\s:]", "", re.sub(r"^\s*serial\s*=\s*", "", cfg["certificate_serial"], flags=re.I)).upper()
         patterns = {
             "alipay": {"app_id": r"[0-9]{16,32}", "seller_id": r"2088[0-9]{12}"},
-            "wechat": {"app_id": r"wx[A-Za-z0-9]{16}", "mch_id": r"[0-9]{6,20}", "certificate_serial": r"[A-Fa-f0-9]{20,64}", "api_v3_key": r"[\x21-\x7e]{32}"},
+            "wechat": {"app_id": r"wx[A-Za-z0-9]{16}", "mch_id": r"[0-9]{6,20}", "certificate_serial": r"[A-F0-9]{20,64}", "api_v3_key": r"[\x21-\x7e]{32}", "platform_public_key_id": r"PUB_KEY_ID_[0-9A-Za-z]{8,64}"},
             "paypal": {"client_id": r"[A-Za-z0-9_-]{10,256}", "webhook_id": r"[A-Za-z0-9_-]{5,128}"},
             "stripe": {"publishable_key": r"pk_(?:test|live)_[A-Za-z0-9]{10,256}", "secret_key": r"(?:sk|rk)_(?:test|live)_[A-Za-z0-9]{10,256}", "webhook_secret": r"whsec_[A-Za-z0-9]{10,256}"},
         }
@@ -133,22 +137,24 @@ class ChannelStore:
         for field in {"app_private_key", "merchant_private_key"} & FIELDS[channel]:
             if cfg.get(field):
                 try:
-                    cfg[field] = normalize_private_key(cfg[field])
-                    key = serialization.load_pem_private_key(cfg[field].encode(), password=None)
-                    if not isinstance(key, rsa.RSAPrivateKey) or key.key_size < 2048: raise ValueError()
-                except Exception: raise ChannelError("invalid_channel_key", field) from None
+                    key = load_private_key(cfg[field])
+                    if key.key_size < 2048: raise KeyProblem("too_short", key.key_size)
+                    cfg[field] = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.TraditionalOpenSSL, serialization.NoEncryption()).decode()
+                except KeyProblem as problem: raise ChannelError("invalid_channel_key", field, problem.reason) from None
         for field in {"alipay_public_key", "platform_public_key"} & FIELDS[channel]:
             if cfg.get(field):
                 try:
-                    cfg[field] = normalize_public_key(cfg[field])
-                    key = serialization.load_der_public_key(base64.b64decode(cfg[field]))
-                    if not isinstance(key, rsa.RSAPublicKey) or key.key_size < 2048: raise ValueError()
-                except Exception: raise ChannelError("invalid_channel_key", field) from None
-        if channel == "alipay" and cfg.get("app_private_key") and cfg.get("alipay_public_key"):
-            private = serialization.load_pem_private_key(cfg["app_private_key"].encode(), password=None)
+                    key = load_public_key(cfg[field])
+                    if key.key_size < 2048: raise KeyProblem("too_short", key.key_size)
+                    cfg[field] = base64.b64encode(key.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)).decode()
+                except KeyProblem as problem: raise ChannelError("invalid_channel_key", field, problem.reason) from None
+        # The provider's public key must never be your own: that is the classic mix-up for both channels
+        pairs = {"alipay": ("app_private_key", "alipay_public_key", "alipay_public_key_is_app_key"), "wechat": ("merchant_private_key", "platform_public_key", "wechat_public_key_is_merchant_key")}
+        if channel in pairs and cfg.get(pairs[channel][0]) and cfg.get(pairs[channel][1]):
+            private = serialization.load_pem_private_key(cfg[pairs[channel][0]].encode(), password=None)
             own = private.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
-            if own == base64.b64decode(cfg["alipay_public_key"]):
-                raise ChannelError("alipay_public_key_is_app_key", "alipay_public_key")
+            if own == base64.b64decode(cfg[pairs[channel][1]]):
+                raise ChannelError(pairs[channel][2], pairs[channel][1])
 
     def save(self, channel, fields, expected_version, actor, config_id=None, name=None, enabled=None, revision=None):
         if channel not in FIELDS: raise ChannelError("unknown_channel")
@@ -202,31 +208,39 @@ class ChannelStore:
             db.execute("INSERT INTO events(accepted,reason,created_at,stage,details,user_id) VALUES (1,'channel_config_added',?,'console.channel',?,?)", (int(time.time()),json.dumps({"channel":channel,"config_id":config_id}),actor))
         return self.describe(channel, config_id)
 
-    def payment_config(self, order=None, config_id=None):
-        record = self.config(order.get("payment_config_id") if order else config_id, "alipay")
-        row = self._row("alipay", order.get("channel_version")) if order and order.get("channel_version") else None
+    def payment_config(self, order=None, config_id=None, channel=None):
+        """The credentials an order must use: its own channel and pinned version, else the (default) configuration."""
+        channel = (order or {}).get("channel") or channel or "alipay"
+        if channel not in INTEGRATED: raise ChannelError("channel_not_integrated")
+        record = self.config(order.get("payment_config_id") if order else config_id, channel)
+        row = self._row(channel, order.get("channel_version")) if order and order.get("channel_version") else None
         if order and order.get("channel_version") and not row: raise ChannelError("channel_config_locked")
         if row:
             cfg, version = self._decode(row), row["id"]
         else:
-            cfg, version, _ = self.get("alipay", record["id"])
+            cfg, version, _ = self.get(channel, record["id"])
+        common = {"channel_version": version or None, "payment_config_id": record["id"], "config_enabled": bool(record["enabled"])}
+        if channel == "wechat":
+            # orders.app_id / orders.seller_id hold the WeChat AppID and merchant number so every notice is matched to both
+            return {**cfg, **common, "channel": "wechat", "seller_id": cfg.get("mch_id", "")}
         env = cfg.get("env", "sandbox")
         urls = dict(self.url_provider() if self.url_provider else self.urls)
         if order:
             for key in ("notify_url", "return_url"):
                 if order.get("provider_" + key) is not None: urls[key] = order["provider_" + key]
-        return {**cfg, **urls, "env": env, "gateway": GATEWAY_BY_ENV[env], "sign_type": "RSA2", "charset": "utf-8", "channel_version": version or None, "payment_config_id": record["id"], "config_enabled": bool(record["enabled"])}
+        return {**cfg, **urls, **common, "channel": "alipay", "env": env, "gateway": GATEWAY_BY_ENV[env], "sign_type": "RSA2", "charset": "utf-8"}
 
     def pin(self, cfg):
         """Bind new orders to the exact credentials used, including during concurrent edits."""
         if cfg.get("channel_version"): return dict(cfg)
-        snapshot = {key: cfg.get(key, "") for key in FIELDS["alipay"]}
+        channel = cfg.get("channel", "alipay")
+        snapshot = {key: cfg.get(key, "") for key in FIELDS[channel]}
         cipher = self._cipher(create=True)
         with self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            for row in db.execute("SELECT * FROM channel_versions WHERE channel='alipay' ORDER BY id DESC"):
+            for row in db.execute("SELECT * FROM channel_versions WHERE channel=? ORDER BY id DESC", (channel,)):
                 if self._decode(row) == snapshot:
                     return {**cfg, "channel_version": row["id"]}
-            version = db.execute("INSERT INTO channel_versions(channel,payload,created_at) VALUES ('alipay',?,?)",
-                                 (cipher.encrypt(json.dumps(snapshot).encode()), int(time.time()))).lastrowid
+            version = db.execute("INSERT INTO channel_versions(channel,payload,created_at) VALUES (?,?,?)",
+                                 (channel, cipher.encrypt(json.dumps(snapshot).encode()), int(time.time()))).lastrowid
         return {**cfg, "channel_version": version}

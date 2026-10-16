@@ -110,7 +110,7 @@ class Store:
             db.execute("UPDATE orders SET expires_at=created_at+900 WHERE expires_at IS NULL")
             now = int(time.time())
             saved = {r["key"]: json.loads(r["value"]) for r in db.execute("SELECT * FROM console_settings")}
-            db.execute("INSERT OR IGNORE INTO payment_checks(out_trade_no,next_check) SELECT out_trade_no,? FROM orders WHERE status='CREATED' AND channel='alipay' AND created_at>=?", (now + saved.get("poll_interval_seconds", 10), now - saved.get("query_window_minutes", 1440) * 60))
+            db.execute("INSERT OR IGNORE INTO payment_checks(out_trade_no,next_check) SELECT out_trade_no,? FROM orders WHERE status='CREATED' AND channel IN ('alipay','wechat') AND created_at>=?", (now + saved.get("poll_interval_seconds", 10), now - saved.get("query_window_minutes", 1440) * 60))
             db.execute("DELETE FROM payment_returns WHERE expires<?", (now,))
         self.path.chmod(0o600)
 
@@ -215,8 +215,8 @@ class Store:
 
     def create_order(self, user_id, payload, pay_url, cfg, return_token=None, payment_payload=None, request_hash=None):
         with self.connect() as db:
-            db.execute("INSERT INTO orders(out_trade_no,user_id,subject,amount,product,pay_url,app_id,seller_id,created_at,notify_url,channel_version) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                       (payload["out_trade_no"], user_id, payload["subject"], payload["amount"], payload["product"], pay_url, cfg["app_id"], cfg["seller_id"], int(time.time()), payload.get("notify_url", ""), cfg.get("channel_version")))
+            db.execute("INSERT INTO orders(out_trade_no,user_id,subject,amount,product,channel,pay_url,app_id,seller_id,created_at,notify_url,channel_version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                       (payload["out_trade_no"], user_id, payload["subject"], payload["amount"], payload["product"], payload.get("channel", "alipay"), pay_url, cfg["app_id"], cfg["seller_id"], int(time.time()), payload.get("notify_url", ""), cfg.get("channel_version")))
             db.execute("UPDATE orders SET expires_at=?,payment_payload=?,request_hash=? WHERE out_trade_no=?", (cfg.get("expires_at", int(time.time()) + 900), json.dumps(payment_payload or {}), request_hash, payload["out_trade_no"]))
             db.execute("UPDATE orders SET provider_notify_url=?,provider_return_url=? WHERE out_trade_no=?", (cfg.get("notify_url", ""), cfg.get("return_url", ""), payload["out_trade_no"]))
             db.execute("UPDATE orders SET payment_config_id=? WHERE out_trade_no=?", (cfg.get("payment_config_id"), payload["out_trade_no"]))
@@ -282,7 +282,7 @@ class Store:
                 where, args = "o.out_trade_no=?", [number]
             else:
                 where, args = "c.next_check<=? AND o.created_at>=?", [now, now - window]
-            row = db.execute(f"SELECT c.* FROM payment_checks c JOIN orders o USING(out_trade_no) WHERE o.status='CREATED' AND o.channel='alipay' AND c.locked_until<=? AND {where} ORDER BY c.next_check LIMIT 1", [now, *args]).fetchone()
+            row = db.execute(f"SELECT c.* FROM payment_checks c JOIN orders o USING(out_trade_no) WHERE o.status='CREATED' AND o.channel IN ('alipay','wechat') AND c.locked_until<=? AND {where} ORDER BY c.next_check LIMIT 1", [now, *args]).fetchone()
             if not row:
                 return None
             db.execute("UPDATE payment_checks SET lease=?,locked_until=?,attempts=attempts+1 WHERE out_trade_no=?", (lease, now + 60, row["out_trade_no"]))
@@ -304,7 +304,21 @@ class Store:
             rows = db.execute("SELECT * FROM orders WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 100" if admin else "SELECT * FROM orders WHERE user_id=? AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 100", () if admin else (user_id,)).fetchall()
             return [dict(row) for row in rows]
 
-    def apply_notification(self, params, app_id, seller_id):
+    def set_provider_status(self, number, text):
+        """What the provider last said, for display; an order that is already paid keeps showing that, so a late answer cannot make it look unpaid."""
+        with self.connect() as db:
+            db.execute("UPDATE orders SET provider_status=? WHERE out_trade_no=? AND (paid_at IS NULL OR ? IN ('SUCCESS','REFUND','TRADE_SUCCESS','TRADE_FINISHED'))", (text, number, text))
+
+    def close_unpaid(self, number, provider_state):
+        """The provider closed an order that was never paid; a paid order is never downgraded."""
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            order = db.execute("SELECT status,paid_at,user_id FROM orders WHERE out_trade_no=?", (number,)).fetchone()
+            if not order or order["paid_at"]: return
+            db.execute("UPDATE orders SET provider_status=?,status=CASE WHEN status='CREATED' THEN 'CLOSED' ELSE status END WHERE out_trade_no=?", (provider_state, number))
+            db.execute("INSERT INTO events(out_trade_no,accepted,reason,created_at,stage,user_id) VALUES (?,1,?,?,'order.updated',?)", (number, "TRADE_CLOSED", int(time.time()), order["user_id"]))
+
+    def apply_notification(self, params, app_id, seller_id, provider_state=None):
         number = params.get("out_trade_no", "")
         first_delay = self.policy()["callback_first_delay_seconds"]
         with self.connect() as db:
@@ -315,7 +329,7 @@ class Store:
             if order["app_id"] != app_id or order["seller_id"] != seller_id:
                 raise ValueError("order_merchant_mismatch")
             status = params["trade_status"]
-            db.execute("UPDATE orders SET provider_status=? WHERE out_trade_no=?", (status,number))
+            db.execute("UPDATE orders SET provider_status=? WHERE out_trade_no=?", (provider_state or status, number))
             if status in {"TRADE_SUCCESS", "TRADE_FINISHED"}:
                 new_status = order["status"] if order["status"] in {"REFUNDING", "PARTIALLY_REFUNDED", "REFUNDED"} else "PAID"
                 db.execute("UPDATE orders SET status=?,trade_no=?,paid_at=COALESCE(paid_at,?) WHERE out_trade_no=?", (new_status,params["trade_no"], int(time.time()), number))
@@ -324,7 +338,7 @@ class Store:
                     event_id = str(uuid.uuid4())
                     payload = json.dumps({"id": event_id, "event": "payment.paid", "out_trade_no": number,
                                           "trade_no": params["trade_no"], "amount": order["amount"], "currency": "CNY",
-                                          "channel": "alipay", "status": "PAID", "paid_at": int(time.time())}, separators=(",", ":"))
+                                          "channel": order["channel"], "status": "PAID", "paid_at": int(time.time())}, separators=(",", ":"))
                     db.execute("INSERT INTO outbox(id,out_trade_no,user_id,url,payload,next_attempt) VALUES (?,?,?,?,?,?)", (event_id, number, order["user_id"], order["notify_url"], payload, int(time.time()) + first_delay))
             elif status == "TRADE_CLOSED" and not order["paid_at"]:
                 db.execute("UPDATE orders SET status='CLOSED',trade_no=? WHERE out_trade_no=?", (params["trade_no"], number))

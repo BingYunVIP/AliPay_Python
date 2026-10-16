@@ -9,7 +9,7 @@ from datetime import datetime
 from decimal import Decimal
 from functools import wraps
 from pathlib import Path
-from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.parse import parse_qs, quote, urlencode, urlsplit
 from zoneinfo import ZoneInfo
 
 from flask import Flask, Response, g, has_request_context, jsonify, redirect, request, send_from_directory
@@ -18,14 +18,15 @@ from werkzeug.exceptions import HTTPException, RequestEntityTooLarge
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from bypay.alipay_client import AlipayClient, AlipayError
+from bypay.wechat_client import WechatClient, WechatError, ready as wechat_ready
 from bypay.constants import GATEWAY_BY_ENV
 from bypay.payment_validation import money
 from .store import Store, digest, present_order
 from .trace import create_trace
 from .webhooks import WebhookSigner, validate_callback, local_callback_origins
 from .console import install_console
-from .channels import ChannelError, ChannelStore, FIELDS
-from .reconcile import Reconciler
+from .channels import ChannelError, ChannelStore, FIELDS, INTEGRATED, REQUIRED as REQUIRED_FIELDS
+from .reconcile import Reconciler, yuan
 from .settings import SiteSettings, SettingsError
 from .refunds import Refunds, RefundError
 
@@ -129,9 +130,19 @@ def create_app(settings=None):
             raise ApiError("payment_not_configured", 503)
         return app.config.get("ALIPAY_CLIENT_FACTORY", AlipayClient)(active)
 
-    reconciler = Reconciler(store, channels, trace, lambda active: app.config.get("ALIPAY_CLIENT_FACTORY", AlipayClient)(active))
+    def wechat_client(config):
+        if not wechat_ready(config):
+            raise ApiError("payment_not_configured", 503)
+        try:
+            return app.config.get("WECHAT_CLIENT_FACTORY", WechatClient)(config)
+        except WechatError as exc:
+            raise ApiError(exc.code, 503) from None
+
+    alipay_factory = lambda active: app.config.get("ALIPAY_CLIENT_FACTORY", AlipayClient)(active)
+    wechat_factory = lambda active: app.config.get("WECHAT_CLIENT_FACTORY", WechatClient)(active)
+    reconciler = Reconciler(store, channels, trace, alipay_factory, wechat_factory)
     app.extensions["reconciler"] = reconciler
-    refunds = Refunds(store, channels, trace, lambda active: app.config.get("ALIPAY_CLIENT_FACTORY", AlipayClient)(active))
+    refunds = Refunds(store, channels, trace, alipay_factory, wechat_factory)
     app.extensions["refunds"] = refunds
 
     def limit(key, count=30, window=60):
@@ -205,7 +216,7 @@ def create_app(settings=None):
             response.headers.pop('X-Frame-Options', None)
             response.headers['Content-Security-Policy'] = response.headers['Content-Security-Policy'].replace("frame-ancestors 'none'", "frame-ancestors 'self' " + g.cashier_parent)
             response.headers['Cache-Control'] = 'no-store'
-        if request.path.startswith(("/api/", "/alipay/", "/m/")) or request.path.endswith('.php'):
+        if request.path.startswith(("/api/", "/alipay/", "/wechat/", "/m/")) or request.path.endswith('.php'):
             response.headers["Cache-Control"] = "no-store"
         if secure:
             response.headers["Strict-Transport-Security"] = "max-age=31536000"
@@ -227,7 +238,7 @@ def create_app(settings=None):
     @app.errorhandler(ChannelError)
     def channel_error(exc):
         status = 409 if str(exc) == "channel_config_conflict" else 503 if str(exc) == "channel_config_locked" else 400
-        return jsonify(error=str(exc), field=exc.field), status
+        return jsonify(error=str(exc), field=exc.field, reason=exc.reason), status
 
     @app.errorhandler(SettingsError)
     def settings_error(exc):
@@ -236,6 +247,12 @@ def create_app(settings=None):
     @app.errorhandler(RefundError)
     def refund_error(exc):
         return jsonify(error=str(exc)), 409
+
+    @app.errorhandler(WechatError)
+    def wechat_error(exc):
+        app.logger.error("WeChat Pay operation failed (%s)", exc.code)
+        trace("sdk.error", exc.code, {"exception_type": type(exc).__name__, "provider_code": exc.provider_code}, number=getattr(g, "order_number", None), user_id=getattr(g, "user", {}).get("id"), accepted=False)
+        return jsonify(error=exc.code), 409 if exc.code == "wechat_order_number_used" else 502
 
     @app.errorhandler(AlipayError)
     def alipay_error(exc):
@@ -252,7 +269,7 @@ def create_app(settings=None):
     def capabilities():
         available = channels.all()
         return jsonify(payment_ready=any(ch["enabled"] and ch["configured"] and ch["integrated"] for ch in available), registration=store.setting("registration", app.config["ALLOW_REGISTRATION"] == "true"),
-                       products=["page", "wap", "app", "mini"], channels=["alipay"], environment=cfg["env"],
+                       products=["page", "wap", "app", "mini"], channels=sorted(INTEGRATED), environment=cfg["env"],
                        channel_enabled=store.setting("alipay_enabled", True), max_amount=store.setting("max_amount", money(app.config["TEST_MAX_AMOUNT"])),
                        automatic_verification=True, notification_configured=bool(cfg["notify_url"]),
                        payment_configs=[{k: item[k] for k in ("id", "config_id", "name", "enabled", "configured", "integrated", "is_default")} | {"environment": item["fields"].get("env")} for item in available],
@@ -390,7 +407,7 @@ def create_app(settings=None):
         from .qrcode import payment_qr_svg
         order = owned_order(number)
         limit("qr:" + str(g.user["id"]), 60)
-        if not order["pay_url"]: raise ApiError("qr_not_available", 422)
+        if not (order["pay_url"] or order["cashier_qr"]): raise ApiError("qr_not_available", 422)
         if order["status"] != "CREATED" or order["expires_at"] <= int(time.time()): raise ApiError("payment_order_expired", 409)
         if order["product"] == "wap":
             # The signed URL is ~1000 characters: its QR is a 160-module grid that cannot hold a logo or be
@@ -413,10 +430,14 @@ def create_app(settings=None):
         order = store.order_for_short_link(token)
         if not order or order["deleted_at"] or order["product"] != "wap": return text("订单不存在", 404)
         if order["status"] != "CREATED" or order["expires_at"] <= int(time.time()): return text("订单已结束或已过期，请返回商户重新下单", 410)
-        try:
-            target = allowed_url(order["pay_url"])
-        except ValueError:
-            return text("订单暂不可用", 404)
+        if order["channel"] == "wechat":
+            target = wechat_h5_target(order)
+            if not target: return text("手机收银台链接已过期，请返回商户重新下单", 410)
+        else:
+            try:
+                target = allowed_url(order["pay_url"])
+            except ValueError:
+                return text("订单暂不可用", 404)
         trace("checkout.clicked", "mobile_checkout_opened", {"note": "手机访问短链接，不作为付款凭证。"}, order["out_trade_no"], order["user_id"])
         return redirect(target, 302)
 
@@ -435,6 +456,8 @@ def create_app(settings=None):
         if payload.get("refresh"):
             order = reconciler.sync(number, "qr_refresh")["order"]
             if order["status"] != "CREATED": return jsonify(order=public_order(order))
+        if order["channel"] == "wechat":
+            return jsonify(order=public_order(store.order(number)))  # a WeChat Native code stays valid for the whole payment window
         trace("checkout.qr", "cashier_qr_requested", number=number, user_id=g.user["id"])
         try:
             qr_cfg = channels.payment_config(order)
@@ -480,14 +503,16 @@ def create_app(settings=None):
         if config_id is not None and (type(config_id) is not int or config_id < 1): raise ApiError("invalid_channel_config")
         if not isinstance(subject, str) or not subject.strip() or len(subject) > 128 or any(ord(c) < 32 for c in subject):
             raise ApiError("invalid_subject")
-        if payload.get("channel", "alipay") != "alipay" or payload.get("product", "page") not in {"page", "wap", "app", "mini"}:
+        channel = payload.get("channel", "alipay")
+        if channel not in INTEGRATED or payload.get("product", "page") not in {"page", "wap", "app", "mini"}:
             raise ApiError("unsupported_product", 422)
+        if channel == "wechat" and len(number) > 32: raise ApiError("wechat_order_number_too_long")  # WeChat Pay accepts 6 to 32 characters
         buyer = {k: payload[k] for k in ("buyer_id", "buyer_open_id") if k in payload}
         if payload.get("product") == "mini":
             if len(buyer) != 1: raise ApiError("buyer_identity_required")
             for key, value in buyer.items():
                 pattern = r"2088[0-9]{12}" if key == "buyer_id" else r"[A-Za-z0-9_-]{8,128}"
-                if not isinstance(value, str) or not re.fullmatch(pattern, value): raise ApiError("invalid_buyer_identity")
+                if (channel == "wechat" and key != "buyer_open_id") or not isinstance(value, str) or not re.fullmatch(pattern, value): raise ApiError("invalid_buyer_identity")
         elif buyer:
             raise ApiError("invalid_buyer_identity")
         if any(k in payload for k in ("return_url", "seller_id", "app_id")):
@@ -507,6 +532,7 @@ def create_app(settings=None):
         if Decimal(amount) > Decimal(store.setting("max_amount", money(app.config["TEST_MAX_AMOUNT"]))):
             raise ApiError("test_amount_exceeded")
         payload = {"out_trade_no": number, "subject": subject.strip(), "amount": amount, "product": payload.get("product", "page"), "notify_url": notify_url}
+        if channel != "alipay": payload["channel"] = channel  # Alipay requests keep their original hash, so old orders still replay
         request_hash = digest(json.dumps({**payload, **buyer}, sort_keys=True, separators=(",", ":")))
         existing = store.order(number)
         was_existing = existing is not None
@@ -523,13 +549,15 @@ def create_app(settings=None):
         if not existing and not internal:
             try:operations.precheck(g.user['id'],payload['subject'],payload['amount'],notify_url,number,operations.rules.client_ip(request),admin=g.user['role']=='admin')
             except ValueError as exc:raise ApiError(str(exc),403) from None
-        if not existing and not store.setting("alipay_enabled", True):
+        if not existing and channel == "alipay" and not store.setting("alipay_enabled", True):
             raise ApiError("channel_disabled", 403)
         policy = site.read()
-        order_cfg = channels.payment_config(existing) if existing else channels.pin(channels.payment_config(config_id=config_id))
+        order_cfg = channels.payment_config(existing) if existing else channels.pin(channels.payment_config(config_id=config_id, channel=channel))
         if not existing and not order_cfg["config_enabled"]: raise ApiError("channel_disabled", 403)
         expires_at = existing["expires_at"] if existing else int(time.time()) + policy["order_timeout_minutes"] * 60
         if expires_at <= int(time.time()): raise ApiError("payment_order_expired", 409)
+        if channel == "wechat":
+            return create_wechat(payload, buyer, order_cfg, existing, request_hash, expires_at, replay, matching, was_existing)
         order_cfg.update(expires_at=expires_at, timeout_express=f"{policy['order_timeout_minutes']}m",
                          time_expire=datetime.fromtimestamp(expires_at, ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S"))
         return_token = secrets.token_urlsafe(32) if payload["product"] in {"page", "wap"} else None
@@ -622,7 +650,116 @@ def create_app(settings=None):
         limit("result:" + order["out_trade_no"], 30)
         result = reconciler.sync(order["out_trade_no"], "return")
         # A result token grants only this receipt, never a session or checkout access.
-        return jsonify(order={k: result["order"][k] for k in ("out_trade_no", "subject", "amount", "status", "paid_at")}, verification=result["verification"])
+        return jsonify(order={k: result["order"][k] for k in ("out_trade_no", "subject", "amount", "status", "paid_at", "channel")}, verification=result["verification"])
+
+    def rfc3339(timestamp):
+        return datetime.fromtimestamp(timestamp, ZoneInfo("Asia/Shanghai")).isoformat(timespec="seconds")
+
+    def create_wechat(payload, buyer, order_cfg, existing, request_hash, expires_at, replay, matching, was_existing):
+        """WeChat Pay order creation, ported from Epay plugins/wxpayn (qrcode / h5 / jspay / wxminipay / apppay).
+
+        The order row exists before any provider I/O and a lease serialises creators, so a repeated request
+        never creates two WeChat orders; a stored payload is replayed instead of calling WeChat again.
+        """
+        number, product, amount = payload["out_trade_no"], payload["product"], payload["amount"]
+        base = site.read()["origin"]
+        if not base.startswith("https://"):
+            raise ApiError("wechat_https_required", 409)  # WeChat requires a public HTTPS notify_url on every order
+        order_cfg.update(notify_url=f"{base}/wechat/notify/{number}", return_url=f"{base}/wechat/return" if product == "wap" else "", expires_at=expires_at)
+        wx = wechat_client(order_cfg)
+        trace("create.received", "request_validated", payload, number, g.user["id"])
+        if not existing:
+            try:
+                existing = store.create_order(g.user["id"], payload, "", order_cfg, request_hash=request_hash)
+            except sqlite3.IntegrityError:
+                existing = store.order(number)
+                matching(existing)
+            trace("create.saved", "order_saved", {"status": existing["status"], "amount": amount}, number, g.user["id"])
+        lease = store.claim_checkout(number)
+        if not lease:
+            current = store.order(number)
+            if json.loads(current["payment_payload"]): return replay(current)
+            raise ApiError("payment_creation_pending", 409)
+        try:
+            cents = int(Decimal(amount) * 100)
+            description, deadline, ip = payload["subject"], rfc3339(expires_at), operations.rules.client_ip(request)
+            trace("sdk.create", "provider_creation_requested", {"method": "wechat." + product}, number, g.user["id"])
+            cashier_qr = ""
+            if product == "page":
+                code = wx.native(number, cents, description, order_cfg["notify_url"], deadline, ip)["code_url"]
+                payment, cashier_qr = {"kind": "wechat_native", "code_url": code}, code
+            elif product == "wap":
+                link = wx.h5(number, cents, description, order_cfg["notify_url"], deadline, ip, "冰云支付", base)["h5_url"]
+                payment = {"kind": "wechat_h5", "url": base + "/m/" + store.short_link(number), "h5_url": link, "h5_at": int(time.time()), "client_ip": ip, "return_token": store.issue_return_token(number)}
+            elif product == "app":
+                payment = {"kind": "wechat_app", "params": wx.app(number, cents, description, order_cfg["notify_url"], deadline, ip)}
+            else:
+                payment = {"kind": "wechat_jsapi", "params": wx.jsapi(number, cents, description, order_cfg["notify_url"], deadline, buyer["buyer_open_id"], ip)}
+            store.finish_checkout(number, lease, payment)
+            if cashier_qr:
+                with store.connect() as db: db.execute("UPDATE orders SET cashier_qr=? WHERE out_trade_no=?", (cashier_qr, number))
+            trace("sdk.ready", "checkout_ready", {"kind": payment["kind"]}, number, g.user["id"])
+        finally:
+            store.finish_checkout(number, lease)
+        return jsonify(order=public_order(store.order(number))), 200 if was_existing else 201
+
+    def wechat_h5_target(order):
+        """A WeChat H5 link only lives 5 minutes, so a stale one is renewed with the order's original parameters."""
+        payload = json.loads(order["payment_payload"] or "{}")
+        if payload.get("kind") != "wechat_h5": return None
+        link, now = payload["h5_url"], int(time.time())
+        if now - payload.get("h5_at", 0) >= 240:
+            if now - payload.get("h5_failed_at", 0) < 20: return None  # a link that cannot be renewed does not call WeChat Pay again on every visit
+            try:
+                cfg = channels.payment_config(order)
+                link = wechat_client(cfg).h5(order["out_trade_no"], int(Decimal(order["amount"]) * 100), order["subject"], order["provider_notify_url"], rfc3339(order["expires_at"]),
+                                             payload["client_ip"], "冰云支付", site.read()["origin"])["h5_url"]
+                payload.update(h5_url=link, h5_at=now)
+            except (WechatError, ApiError, ChannelError):
+                payload["h5_failed_at"] = now
+                link = None
+            with store.connect() as db: db.execute("UPDATE orders SET payment_payload=? WHERE out_trade_no=?", (json.dumps(payload), order["out_trade_no"]))
+            if link is None: return None
+        redirect = f"{site.read()['origin']}/wechat/return?state={payload['return_token']}"
+        return f"{link}&redirect_url={quote(redirect, safe='')}"
+
+    @app.post("/wechat/notify/<number>")
+    def wechat_notify(number):
+        """WeChat Pay payment notice: verify with the public key, decrypt with the APIv3 key, then apply only a matching, paid order."""
+        known = re.fullmatch(r"[A-Za-z0-9_|*-]{6,32}", number) is not None
+        # anyone can post here, so the work per request is capped before anything is read, and a flood of refusals leaves a few log lines, not thousands
+        if not store.rate_limit("wechat-notify:" + (number if known else "invalid"), 30, 60) or not store.rate_limit("wechat-notify-ip:" + (request.remote_addr or "-"), 300, 60):
+            return jsonify(code="FAIL", message="too many requests"), 429
+
+        def refuse(status, reason, message):
+            if not re.fullmatch(r"[a-z][a-z0-9_]{2,63}", reason): reason = "notification_invalid"
+            if store.rate_limit(f"wechat-notify-log:{number if known else 'invalid'}:{reason}", 3, 300):
+                trace("notify.rejected", reason, {"channel": "wechat"}, number if known else None, accepted=False)
+            return jsonify(code="FAIL", message=message), status
+        order = store.order(number) if known else None
+        if not order or order["channel"] != "wechat":
+            return refuse(400, "unknown_order", "rejected")  # the same answer as a bad signature, so this cannot be used to look orders up
+        try:
+            cfg = channels.payment_config(order)
+            if not wechat_ready(cfg): raise WechatError("not configured", "payment_not_configured")
+            notice = wechat_factory(cfg).read_notification(request.headers, request.get_data())
+            trace("notify.signature", "signature_valid", {"out_trade_no": number, "channel": "wechat"}, number, order["user_id"])
+            if notice["event_type"] != "TRANSACTION.SUCCESS":
+                return "", 204  # verified, and nothing for us to change
+            paid = notice["transaction"]
+            amount = paid.get("amount") or {}
+            if paid.get("trade_state") != "SUCCESS" or paid.get("out_trade_no") != number or paid.get("mchid") != cfg["mch_id"] or paid.get("appid") != cfg["app_id"] or amount.get("currency", "CNY") != "CNY":
+                raise ValueError("merchant_mismatch" if paid.get("mchid") != cfg["mch_id"] or paid.get("appid") != cfg["app_id"] else "unknown_order")
+            store.apply_notification({"out_trade_no": number, "app_id": cfg["app_id"], "seller_id": cfg["mch_id"], "total_amount": yuan(amount.get("total")),
+                                      "trade_no": paid.get("transaction_id", ""), "trade_status": "TRADE_SUCCESS"}, cfg["app_id"], cfg["mch_id"], provider_state="SUCCESS")
+        except WechatError as exc:
+            return refuse(400, exc.code, "rejected")
+        except (ValueError, sqlite3.IntegrityError, ChannelError) as exc:
+            return refuse(400, str(exc) if isinstance(exc, ValueError) and not isinstance(exc, ChannelError) else "payment_mismatch", "rejected")
+        order = store.order(number)
+        trace("notify.accepted", "notification_verified_and_saved", {"app_id": cfg["app_id"], "seller_id": cfg["mch_id"], "total_amount": yuan(amount.get("total")), "trade_state": "SUCCESS",
+              "trade_no": paid.get("transaction_id", ""), "reply": "204"}, number, order["user_id"])
+        return "", 204
 
     @app.post("/alipay/notify")
     def notify():
@@ -650,6 +787,7 @@ def create_app(settings=None):
         return "success", 200, {"Content-Type": "text/plain; charset=utf-8"}
 
     @app.get("/alipay/return")
+    @app.get("/wechat/return")
     def payment_return():
         # Return parameters can locate a receipt but NEVER confirm payment.
         token = request.args.get("state", "")
@@ -658,7 +796,7 @@ def create_app(settings=None):
             # Older checkout links had no state token. Only an authentic Alipay
             # return may recover their receipt without a login session.
             legacy = store.order(request.args.get("out_trade_no", ""))
-            if legacy:
+            if legacy and legacy["channel"] == "alipay":
                 legacy_cfg = channels.payment_config(legacy)
                 if request.args.get("app_id") == legacy["app_id"] and AlipayClient.verify_notify(request.args.to_dict(), legacy_cfg["alipay_public_key"]):
                     order, token = legacy, store.issue_return_token(legacy["out_trade_no"])
@@ -686,9 +824,30 @@ def create_app(settings=None):
                 checks.append({"name": "sdk_keys", "ok": True})
             except (AlipayError, ValueError):
                 checks.append({"name": "sdk_keys", "ok": False})
-        return jsonify(checks=checks, origin=site.read()["origin"], notify_url=cfg["notify_url"], return_url=cfg["return_url"],
+        # every saved configuration, per channel: which required parameters are present
+        configurations = []
+        for item in channels.all():
+            if not item["integrated"]: continue
+            fields = {**item["fields"], **{key: present for key, present in item["secrets"].items()}}
+            required = REQUIRED_FIELDS[item["id"]]
+            configurations.append({"id": item["id"], "config_id": item["config_id"], "name": item["name"], "enabled": item["enabled"], "configured": item["configured"],
+                                   "checks": [{"name": key, "ok": bool(fields.get(key))} for key in sorted(required)]})
+        return jsonify(checks=checks, configurations=configurations, origin=site.read()["origin"], notify_url=cfg["notify_url"], return_url=cfg["return_url"],
+                       wechat_notify_ready=site.read()["origin"].startswith("https://"),
                        environment=cfg["env"], automatic_verification=True, notification_configured=bool(cfg["notify_url"]),
                        note="订单会自动向支付宝查询并验签；异步通知需配置指向当前服务的公网 HTTPS 地址" if not cfg["notify_url"] else "订单通过支付宝通知和自动查询核验，均保留验签和金额校验")
+
+    @app.post("/api/admin/channel-configs/<int:config_id>/check")
+    @auth(session_only=True, admin=True)
+    def check_channel_config(config_id):
+        """Online check that creates nothing: WeChat Pay looks up an order number that cannot exist."""
+        with store.connect() as db: row = db.execute("SELECT channel FROM channel_configs WHERE id=?", (config_id,)).fetchone()
+        if not row: raise ApiError("not_found", 404)
+        if row["channel"] != "wechat": raise ApiError("channel_check_unavailable", 422)
+        limit("channel-check:" + str(config_id), 6)
+        result = wechat_client(channels.payment_config(config_id=config_id, channel="wechat")).check()
+        trace("console.channel", "channel_checked", {"config_id": config_id, "authenticated": result["authenticated"], "verified": result["verified"], "provider_code": result["provider_code"]}, user_id=g.user["id"], accepted=result["authenticated"])
+        return jsonify(**result)
 
     @app.get("/api/admin/channels")
     @auth(session_only=True, admin=True)
@@ -720,7 +879,7 @@ def create_app(settings=None):
     @app.get("/", defaults={"path": ""})
     @app.get("/<path:path>")
     def frontend(path):
-        if path.startswith(("api/", "alipay/")) or path.startswith("."):
+        if path.startswith(("api/", "alipay/", "wechat/")) or path.startswith("."):
             raise ApiError("not_found", 404)
         dist = Path(app.config["FRONTEND_DIST"]).resolve()
         candidate = (dist / path).resolve()

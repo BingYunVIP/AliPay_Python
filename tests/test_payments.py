@@ -98,7 +98,8 @@ class PaymentTests(unittest.TestCase):
         for amount in [0.01, "0", "-1", "NaN", "Infinity", "1e1", "0.001", "11.00", "100000000"]:
             with self.subTest(amount=amount):
                 self.assertEqual(self.create(amount=amount).status_code, 400)
-        self.assertEqual(self.create(channel="wechat").status_code, 422)
+        self.assertEqual(self.create(channel="paypal").status_code, 422)
+        self.assertEqual(self.create(channel="wechat").status_code, 503)  # integrated, but nothing configured yet
         self.assertEqual(self.create(product="unknown").status_code, 422)
         self.assertEqual(self.create(return_url="https://evil.example").status_code, 400)
 

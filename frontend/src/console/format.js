@@ -1,8 +1,9 @@
-import { locale, t } from '../state'
+import { errors, locale, t } from '../state'
 
 export const amount = cents => (Number(cents || 0) / 100).toLocaleString(locale.value === 'zh' ? 'zh-CN' : 'en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 export const date = timestamp => timestamp ? new Date(timestamp * 1000).toLocaleString(locale.value === 'zh' ? 'zh-CN' : 'en-GB', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }) : '—'
 export const fullDate = timestamp => timestamp ? new Date(timestamp * 1000).toLocaleString(locale.value === 'zh' ? 'zh-CN' : 'en-GB', { hour12: false }) : '—'
+export const dayOnly = timestamp => timestamp ? new Date(timestamp * 1000).toLocaleDateString(locale.value === 'zh' ? 'zh-CN' : 'en-GB', { year: 'numeric', month: '2-digit', day: '2-digit' }) : '—'
 export const time = timestamp => timestamp ? new Date(timestamp * 1000).toLocaleTimeString(locale.value === 'zh' ? 'zh-CN' : 'en-GB', { hour12: false }) : '—'
 export const status = value => ({ CREATED: t('待支付', 'Awaiting payment'), PAID: t('已支付', 'Paid'), CLOSED: t('已关闭', 'Closed'), EXPIRED: t('已过期', 'Expired'), REFUNDING: t('退款处理中', 'Refund pending'), PARTIALLY_REFUNDED: t('部分退款', 'Partially refunded'), REFUNDED: t('已退款', 'Refunded'), pending: t('等待投递', 'Pending'), delivered: t('投递成功', 'Delivered'), failed: t('投递失败', 'Failed') })[value] || value
 export const productName = value => ({ page: t('网页支付', 'Web payment'), wap: t('手机支付', 'Mobile payment'), app: t('APP 支付', 'App payment'), mini: t('小程序支付', 'Mini program') })[value] || value
@@ -31,25 +32,25 @@ const messages = {
   query_requested: ['正在查询支付宝交易', 'Query sent to Alipay'],
   sdk_response_received: ['已收到支付宝查询结果', 'Alipay query response received'],
   query_verified_and_saved: ['查询结果验签与订单校验通过，状态已同步', 'Query verified and order status synchronized'],
-  awaiting_checkout: ['支付宝尚未生成交易，继续等待', 'Alipay has no transaction yet — waiting'],
+  awaiting_checkout: ['渠道尚未生成交易，继续等待', 'The channel has no transaction yet — waiting'],
   payment_response_signature_invalid: ['支付宝查询响应验签失败，保留原订单状态', 'Response signature invalid — order unchanged'],
   payment_request_signature_invalid: ['支付宝请求签名不匹配，请核对 APPID 与密钥', 'Request signature mismatch — check App ID and keys'],
   payment_app_id_invalid: ['支付宝 APPID 无效', 'Alipay App ID is invalid'],
-  payment_mismatch: ['查询结果与订单不匹配，拒绝更新', 'Query does not match the order — update rejected'],
-  notification_received: ['收到支付宝通知，等待验证', 'Notification received; awaiting verification'],
-  signature_valid: ['RSA2 签名验证通过', 'RSA2 signature verified'],
+  payment_mismatch: ['渠道返回的交易与订单不匹配，拒绝更新', 'The channel result does not match the order — update rejected'],
+  notification_received: ['收到支付通知，等待验证', 'Payment notification received; awaiting verification'],
+  signature_valid: ['通知签名验证通过', 'Notification signature verified'],
   notification_verified_and_saved: ['订单、金额与商户校验通过', 'Order, amount, and merchant verified'],
   invalid_signature: ['签名验证失败，拒绝通知', 'Invalid signature; notification rejected'],
   amount_mismatch: ['订单金额不匹配', 'Order amount mismatch'],
   merchant_mismatch: ['应用或收款商户不匹配', 'App or merchant mismatch'],
   unknown_order: ['本地不存在该订单', 'Order not found locally'],
-  trade_mismatch: ['支付宝交易号不匹配', 'Alipay trade number mismatch'],
-  trade_conflict: ['支付宝交易号已关联其他订单', 'Trade number belongs to another order'],
+  trade_mismatch: ['渠道交易号不匹配', 'Channel trade number mismatch'],
+  trade_conflict: ['渠道交易号已关联其他订单', 'Trade number belongs to another order'],
   browser_return_is_not_payment_confirmation: ['浏览器同步返回（不确认到账）', 'Browser returned (does not confirm payment)'],
-  checkout_open_requested: ['用户打开支付宝收银台', 'User opened Alipay checkout'],
+  checkout_open_requested: ['用户打开收银台', 'User opened the checkout'],
   mobile_checkout_opened: ['手机收银台短链接被打开（不确认到账）', 'Mobile checkout link opened (does not confirm payment)'],
-  payment_provider_error: ['支付宝接口调用失败', 'Alipay API request failed'],
-  payment_not_configured: ['支付宝参数尚未配置完整', 'Alipay configuration incomplete'],
+  payment_provider_error: ['支付渠道接口调用失败', 'Payment channel API request failed'],
+  payment_not_configured: ['渠道参数尚未配置完整', 'Channel configuration incomplete'],
   TRADE_SUCCESS: ['支付成功，订单已入账', 'Payment confirmed'],
   TRADE_FINISHED: ['交易完成', 'Trade completed'],
   TRADE_CLOSED: ['交易关闭通知已处理', 'Trade closure processed'],
@@ -64,6 +65,57 @@ const messages = {
   user_disabled: ['已停用用户并撤销密钥', 'User disabled and API key revoked'],
   user_enabled: ['已恢复用户访问', 'User access restored'],
   channel_config_saved: ['渠道配置已加密保存', 'Channel configuration encrypted and saved'],
+  channel_checked: ['已在线检查渠道配置', 'Channel configuration checked online'],
+  wechat_query_requested: ['正在查询微信支付订单', 'Query sent to WeChat Pay'],
+  wechat_query_received: ['已收到微信支付查询结果', 'WeChat Pay query response received'],
+  wechat_refund_response: ['收到微信支付退款响应', 'WeChat Pay refund response received'],
+  wechat_refund_query_received: ['收到微信支付退款查询结果', 'WeChat Pay refund query received'],
+  refund_processing: ['微信支付正在处理退款，后台会继续查询', 'WeChat Pay is processing the refund; verification continues'],
+  refund_abnormal: ['微信支付提示退款异常，请到商户平台交易中心手动处理', 'WeChat Pay reports an abnormal refund — handle it in the merchant platform'],
+  refund_provider_error: ['支付渠道拒绝了退款', 'The payment channel rejected the refund'],
+  domain_requested: ['商户申请了支付域名', 'A merchant requested a payment domain'],
+  domain_approved: ['支付域名已通过', 'Payment domain approved'],
+  domain_rejected: ['支付域名未通过', 'Payment domain rejected'],
+  merchant_approved: ['商户审核已通过', 'Merchant approved'],
+  merchant_rejected: ['商户审核未通过', 'Merchant rejected'],
+  merchant_credentials_updated: ['商户接口凭据已更新', 'Merchant API credentials updated'],
+  merchant_risk_released: ['已解除商户风控暂停', 'Merchant risk hold released'],
+  epay_order_created: ['商户通过接口创建了订单', 'A merchant created an order through the API'],
+  epay_request_rejected: ['商户接口请求被拒绝', 'A merchant API request was rejected'],
+  orders_delete: ['订单已批量移入已删除', 'Orders moved to deleted'],
+  orders_restore: ['订单已批量恢复', 'Orders restored'],
+  smtp_saved: ['邮箱配置已保存', 'Email settings saved'],
+  smtp_test_sent: ['测试邮件已提交 SMTP 服务器', 'Test email handed to the SMTP server'],
+  mail_template_saved: ['邮件模板已保存', 'Email template saved'],
+  turnstile_saved: ['人机验证配置已保存', 'Human check settings saved'],
+  platform_policy_saved: ['商户与资金规则已保存', 'Merchant and funds rules saved'],
+  settlement_paid: ['结算已登记出款', 'Settlement marked as paid'],
+  settlement_cancel: ['结算申请已取消', 'Settlement cancelled'],
+  platform_task_requested: ['手动执行了平台任务', 'Platform tasks run manually'],
+  platform_task_failed: ['平台任务执行失败', 'A platform task failed'],
 }
-export const logMessage = reason => messages[reason] ? t(...messages[reason]) : reason
-export const stageName = stage => ({ refund: t('退款处理', 'Refund processing'), create: t('订单创建', 'Order creation'), sdk: 'Alipay SDK', query: t('交易查询', 'Payment query'), notify: t('支付宝通知', 'Alipay notification'), merchant: t('商户回调', 'Merchant callback'), console: t('操作审计', 'Audit'), return: t('同步返回', 'Browser return'), checkout: t('收银台', 'Checkout'), order: t('订单状态', 'Order status') })[stage?.split('.')[0]] || stage
+export const logMessage = reason => messages[reason] ? t(...messages[reason]) : errors[reason] ? t(...errors[reason]) : reason
+const stages = {
+  refund: ['退款处理', 'Refunds'], create: ['订单创建', 'Order creation'], sdk: ['渠道接口', 'Channel API'], query: ['交易查询', 'Payment query'], notify: ['支付通知', 'Notifications'],
+  merchant: ['商户', 'Merchants'], console: ['操作审计', 'Audit'], return: ['同步返回', 'Browser return'], checkout: ['收银台', 'Checkout'], order: ['订单状态', 'Order status'],
+  request: ['接口请求', 'API requests'], settings: ['系统设置', 'Settings'], settlement: ['结算', 'Settlements'], mail: ['邮件', 'Email'], task: ['计划任务', 'Tasks'], domain: ['支付域名', 'Domains'], risk: ['风控', 'Risk'],
+}
+export const logCategories = Object.keys(stages)
+export const stageName = stage => { const entry = stages[stage?.split('.')[0]]; return entry ? t(...entry) : stage }
+// accepted events are fine; a rejected or failed one is a problem; anything else not accepted yet is still waiting for its check
+export const logLevel = event => event.accepted ? 'ok' : /\.(rejected|failed|error)$|invalid|mismatch|conflict|failed|rejected|error|unknown_order|abnormal/.test(`${event.stage} ${event.reason}`) ? 'bad' : 'wait'
+const sameDay = (a, b) => a.toDateString() === b.toDateString()
+export const dayLabel = timestamp => {
+  const day = new Date(timestamp * 1000), now = new Date(), yesterday = new Date(now.getTime() - 86400000)
+  if (sameDay(day, now)) return t('今天', 'Today')
+  if (sameDay(day, yesterday)) return t('昨天', 'Yesterday')
+  return day.toLocaleDateString(locale.value === 'zh' ? 'zh-CN' : 'en-GB', { year: day.getFullYear() === now.getFullYear() ? undefined : 'numeric', month: 'long', day: 'numeric', weekday: 'short' })
+}
+export const ago = timestamp => {
+  const seconds = Math.max(0, Math.floor(Date.now() / 1000 - timestamp))
+  if (seconds < 10) return t('刚刚', 'just now')
+  if (seconds < 60) return t(`${seconds} 秒前`, `${seconds}s ago`)
+  if (seconds < 3600) return t(`${Math.floor(seconds / 60)} 分钟前`, `${Math.floor(seconds / 60)} min ago`)
+  if (seconds < 86400) return t(`${Math.floor(seconds / 3600)} 小时前`, `${Math.floor(seconds / 3600)} h ago`)
+  return t(`${Math.floor(seconds / 86400)} 天前`, `${Math.floor(seconds / 86400)} d ago`)
+}

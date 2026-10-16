@@ -15,6 +15,8 @@ from bypay.payment_validation import money
 from .store import present_order
 
 ZONE = ZoneInfo("Asia/Shanghai")
+# The first part of an event's stage names its category in the event log
+EVENT_CATEGORIES = {"notify", "merchant", "create", "query", "console", "sdk", "refund", "order", "return", "checkout", "settings", "settlement", "mail", "task", "domain", "risk", "request"}
 
 
 def install_console(app, store, auth, trace, cfg, ready, ApiError):
@@ -180,7 +182,7 @@ def install_console(app, store, auth, trace, cfg, ready, ApiError):
             where += " AND instr(COALESCE(out_trade_no,'') || ' ' || stage || ' ' || reason,?)>0"; args.append(search)
         category = request.args.get("category", "all")
         if category != "all":
-            if category not in {"notify", "merchant", "create", "query", "console", "sdk", "refund", "order", "return", "checkout"}: raise ApiError("invalid_category")
+            if category not in EVENT_CATEGORIES: raise ApiError("invalid_category")
             where += " AND stage LIKE ?"; args.append(category + ".%")
         if request.args.get("status") == "rejected": where += " AND accepted=0"
         page, size = page_args()

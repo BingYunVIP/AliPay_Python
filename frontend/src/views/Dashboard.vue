@@ -1,5 +1,6 @@
 <script setup>
 import { defineAsyncComponent, provide, ref, watch } from 'vue'
+import { onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
 import { dark, locale, t } from '../state'
 import { useConsole } from '../console/useConsole'
 import Icon from '../components/Icon.vue'
@@ -7,8 +8,13 @@ import ConsoleSidebar from '../console/ConsoleSidebar.vue'
 import OverviewPanel from '../console/OverviewPanel.vue'
 import OrderDialog from '../console/OrderDialog.vue'
 import '../console/console.css'
+import '../console/admin.css'
 const c = useConsole()
 provide('console', c)
+// Moving to another console page, or away from the console, with unsaved edits needs a yes; tabs inside one page keep their drafts
+const leave = () => !c.hasUnsaved() || window.confirm(t('有未保存的修改，确定离开当前页面？', 'You have unsaved changes. Leave this page?'))
+onBeforeRouteLeave(leave)
+onBeforeRouteUpdate((to, from) => to.query.tab === from.query.tab || leave())
 const compact = ref(false), mobileNav = ref(null), quickSearch = ref('')
 const panels = {
   overview: OverviewPanel,

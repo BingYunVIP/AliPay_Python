@@ -23,6 +23,11 @@ export function useConsole() {
   const tab = computed(() => menus.value.some(m => m.id === route.query.tab) ? route.query.tab : 'overview')
   const current = computed(() => menus.value.find(m => m.id === tab.value))
   function navigate(id, query = {}) { return router.push({ path: '/dashboard', query: { tab: id, ...query } }) }
+  // A page with edits that are not saved yet registers a check; leaving the page or closing the tab asks first
+  const unsaved = new Set()
+  function guard(isDirty) { unsaved.add(isDirty); onBeforeUnmount(() => unsaved.delete(isDirty)) }
+  const hasUnsaved = () => [...unsaved].some(check => check())
+  const warnUnload = event => { if (hasUnsaved()) { event.preventDefault(); event.returnValue = '' } }
   function report(e) { error.value = errorText(e); if (e.status === 401) router.push('/login') }
   function toast(text) { clearTimeout(timer); notice.value = text; timer = setTimeout(() => { notice.value = '' }, 4200) }
   async function refresh(manual = false) {
@@ -44,11 +49,11 @@ export function useConsole() {
     catch (e) { report(e) }
   }
   watch(period, () => refresh(true))
-  onMounted(() => { refresh(); interval = setInterval(() => { if (!document.hidden) { refresh(); revision.value++ } }, 10000) })
-  onBeforeUnmount(() => { disposed = true; version++; clearInterval(interval); clearTimeout(timer) })
+  onMounted(() => { refresh(); interval = setInterval(() => { if (!document.hidden) { refresh(); revision.value++ } }, 10000); window.addEventListener('beforeunload', warnUnload) })
+  onBeforeUnmount(() => { disposed = true; version++; clearInterval(interval); clearTimeout(timer); window.removeEventListener('beforeunload', warnUnload) })
   const connection = computed(() => error.value ? 'error' : overview.value ? 'online' : 'loading')
   return { overview, caps, settings, period, busy, refreshing, error, notice, latency, menus, tab, current,
-    revision, selectedOrder, connection, navigate, refresh, report, toast, logout }
+    revision, selectedOrder, connection, navigate, refresh, report, toast, logout, guard, hasUnsaved }
 }
 
 export function usePaged(endpoint, key, filters, consoleState) {

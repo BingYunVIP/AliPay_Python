@@ -26,12 +26,17 @@ const badge = computed(() => phase.value === 'paid' ? { cls: props.order.status,
   : phase.value === 'expired' ? { cls: 'EXPIRED', text: statusName('EXPIRED') }
   : { cls: 'CLOSED', text: props.order.deleted_at ? t('已删除', 'Deleted') : statusName('CLOSED') })
 const showsCode = computed(() => ['page', 'wap'].includes(props.order.product))
-const parameters = computed(() => props.order.product === 'app' ? props.order.payment_payload?.order_string || ''
-  : `my.tradePay({\n  tradeNO: ${JSON.stringify(props.order.payment_payload?.trade_no || props.order.trade_no || '')}\n})`)
+// what a client has to call to open the payment, per provider
+const payload = computed(() => props.order.payment_payload || {})
+const parameters = computed(() => payload.value.kind === 'wechat_app' ? JSON.stringify(payload.value.params, null, 2)
+  : payload.value.kind === 'wechat_jsapi' ? `wx.requestPayment(${JSON.stringify(payload.value.params, null, 2)})`
+  : props.order.product === 'app' ? payload.value.order_string || ''
+  : `my.tradePay({\n  tradeNO: ${JSON.stringify(payload.value.trade_no || props.order.trade_no || '')}\n})`)
+const parameterLabel = computed(() => ({ wechat_app: 'WeChat APP SDK', wechat_jsapi: 'wx.requestPayment' })[payload.value.kind] || (props.order.product === 'app' ? 'orderString' : 'my.tradePay'))
 const source = computed(() => `/api/v1/payments/${encodeURIComponent(props.order.out_trade_no)}/qr.svg?v=${attempt.value}`)
 
 async function prepare() {
-  if (phase.value !== 'waiting' || preparing.value || props.order.product !== 'page') return
+  if (phase.value !== 'waiting' || preparing.value || props.order.product !== 'page' || props.order.channel !== 'alipay') return
   preparing.value = true; failed.value = false
   try {
     const result = await api(`/api/v1/payments/${props.order.out_trade_no}/prepare-qr`, { method: 'POST', body: '{}' })
@@ -67,7 +72,7 @@ onBeforeUnmount(() => { disposed = true; clearInterval(tick); clearTimeout(copyT
           <div v-else class="qr-state" role="status"><Icon name="alert" :size="30" /><b>{{ t('付款码获取失败', 'Payment code unavailable') }}</b><button class="button button-secondary" type="button" @click="retry">{{ t('重新获取', 'Try again') }}</button></div>
         </div>
         <div v-else class="qr-code-block">
-          <div class="qr-code-head"><code>{{ order.product === 'app' ? 'orderString' : 'my.tradePay' }}</code><button type="button" class="icon-button" :aria-label="t('复制支付参数', 'Copy payment parameters')" @click="copy"><Icon :name="copied ? 'check' : 'copy'" :size="15" /></button></div>
+          <div class="qr-code-head"><code>{{ parameterLabel }}</code><button type="button" class="icon-button" :aria-label="t('复制支付参数', 'Copy payment parameters')" @click="copy"><Icon :name="copied ? 'check' : 'copy'" :size="15" /></button></div>
           <pre tabindex="0">{{ parameters }}</pre>
           <span class="sr-only" role="status">{{ copied ? t('已复制', 'Copied') : '' }}</span>
         </div>

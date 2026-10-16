@@ -142,7 +142,9 @@ class ReconciliationTests(unittest.TestCase):
             receipt = visitor.post('/api/payment-result', json={'state': token}, headers={'Origin': 'https://pay.example.test'})
         self.assertEqual(receipt.status_code, 200)
         self.assertEqual(receipt.json['order']['status'], 'PAID')
-        self.assertEqual(set(receipt.json['order']), {'out_trade_no', 'subject', 'amount', 'status', 'paid_at'})
+        # the receipt page names the payment channel (so it can say WeChat Pay or Alipay) and shows nothing about accounts or keys
+        self.assertEqual(set(receipt.json['order']), {'out_trade_no', 'subject', 'amount', 'status', 'paid_at', 'channel'})
+        self.assertEqual(receipt.json['order']['channel'], 'alipay')
         self.assertEqual(visitor.get('/api/v1/payments/TEST_ORDER_0001').status_code, 401)
         self.assertNotIn(token, (self.root / 'logs/payment.jsonl').read_text())
 

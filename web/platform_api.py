@@ -174,9 +174,14 @@ def install_platform(app,auth,create_payment,ApiError,same_origin):
     @app.get('/api/admin/settlements')
     @auth(session_only=True,admin=True)
     def settlements():
-        with store.connect() as db:rows=[dict(r) for r in db.execute('SELECT s.*,u.email FROM settlements s JOIN users u ON u.id=s.user_id ORDER BY s.created_at DESC LIMIT 200')]
+        status=request.args.get('status','all')
+        if status not in {'all','pending','paid','cancel'}:raise ApiError('invalid_status')
+        with store.connect() as db:
+            rows=[dict(r) for r in db.execute('SELECT s.*,u.email FROM settlements s JOIN users u ON u.id=s.user_id'+('' if status=='all' else ' WHERE s.status=?')+' ORDER BY s.created_at DESC LIMIT 200',() if status=='all' else (status,))]
+            # totals cover every settlement, so they stay right when the list is limited to the latest 200
+            totals={r['status']:{'count':r['count'],'gross':r['gross'],'fee':r['fee']} for r in db.execute('SELECT status,COUNT(*) AS count,COALESCE(SUM(gross),0) AS gross,COALESCE(SUM(fee),0) AS fee FROM settlements GROUP BY status')}
         for row in rows:row['beneficiary']=json.loads(mailer.cipher.decrypt(row['beneficiary'])) if row['beneficiary'] else {}
-        return jsonify(settlements=rows)
+        return jsonify(settlements=rows,totals=totals)
 
     @app.post('/api/admin/settlements/<identity>')
     @auth(session_only=True,admin=True)

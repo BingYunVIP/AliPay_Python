@@ -32,6 +32,7 @@ CATEGORIES = {
     "order": "订单",
     "notify": "回调",
     "alipay": "支付宝接口",
+    "wechat": "微信支付接口",
     "error": "错误",
 }
 
@@ -39,8 +40,8 @@ LEVELS = {"DEBUG": 10, "INFO": 20, "WARN": 30, "ERROR": 40}
 
 # 命中即视为敏感字段（大小写不敏感，允许前后缀）
 _SENSITIVE_KEY = re.compile(
-    r"private_key|public_key|password|passwd|pwd|secret|token|api_key|apikey"
-    r"|^sign$|^signature$|_sign$|_signature$|buyer|seller_email|logon_id|identity|phone|email",
+    r"private_key|public_key|password|passwd|pwd|secret|token|api_key|apikey|api_?v3|v3_key"
+    r"|^sign$|^signature$|_sign$|_signature$|paysign|buyer|seller_email|logon_id|identity|phone|email|openid|ciphertext",
     re.IGNORECASE,
 )
 

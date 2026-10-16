@@ -39,6 +39,33 @@ class ConsoleTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.json[field], [])
 
+    def test_event_log_can_be_filtered_by_every_category_the_platform_writes(self):
+        client, headers = self.admin()
+        version = client.get('/api/admin/policy').json['version']
+        self.assertEqual(client.put('/api/admin/policy', json={'registration_fee': '12.00', 'version': version}, headers=headers).status_code, 200)
+        events = client.get('/api/console/events?category=settings').json
+        self.assertEqual([event['reason'] for event in events['events']], ['platform_policy_saved'])
+        self.assertEqual(client.get('/api/console/events?category=unknown').status_code, 400)
+        # a stage that the platform starts to write must also be offered as a category, or the log page cannot filter it
+        import re
+        from pathlib import Path
+        from web.console import EVENT_CATEGORIES
+        written = {match for path in Path('web').glob('*.py') for match in re.findall(r'(?:trace|log)\(\s*["\']([a-z]+)\.', path.read_text())}
+        self.assertTrue(written)
+        self.assertEqual(written - EVENT_CATEGORIES, set())
+        for category in EVENT_CATEGORIES:
+            self.assertEqual(client.get('/api/console/events?category=' + category).status_code, 200, category)
+
+    def test_every_event_the_platform_writes_is_described_in_words_on_the_log_page(self):
+        import re
+        from pathlib import Path
+        reasons = {match for path in Path('web').glob('*.py') for match in re.findall(r'(?:trace|log)\(\s*["\'][a-z]+\.[a-z_]+["\'],\s*["\']([A-Za-z_]+)["\']', path.read_text())}
+        described = {key for name in ('frontend/src/console/format.js', 'frontend/src/state.js') for key in re.findall(r'^\s+([A-Za-z_]+):\s*\[', Path(name).read_text(), re.M)}
+        self.assertTrue(reasons)
+        # a reason ending in an underscore is the start of a name built at run time (domain_ + approved)
+        missing = {reason for reason in reasons if (reason not in described if not reason.endswith('_') else not any(key.startswith(reason) for key in described))}
+        self.assertEqual(missing, set(), 'add a description to frontend/src/console/format.js')
+
     def test_overview_and_pagination_are_not_limited_to_latest_100(self):
         cfg = self.app.extensions['alipay_config']
         for i in range(107):

@@ -25,6 +25,10 @@ def persist_once(path, data):
     finally: temp.unlink(missing_ok=True)
 
 
+EPAY_CHANNELS = {'alipay':'alipay','wxpay':'wechat'}  # the Epay protocol calls WeChat Pay "wxpay"
+EPAY_TYPES = {channel:name for name,channel in EPAY_CHANNELS.items()}
+
+
 class Merchants:
     def __init__(self, store, site):
         self.store, self.site = store, site
@@ -139,7 +143,7 @@ class Merchants:
     def notification(self, number):
         record, order = self.order(number), self.store.order(number)
         if not record or not order or not order['paid_at']: raise ValueError('order_not_paid')
-        fields = {'pid':record['pid'],'trade_no':number,'out_trade_no':record['merchant_no'],'type':order['channel'],
+        fields = {'pid':record['pid'],'trade_no':number,'out_trade_no':record['merchant_no'],'type':EPAY_TYPES.get(order['channel'],order['channel']),
                   'name':order['subject'],'money':order['amount'],'trade_status':'TRADE_SUCCESS'}
         if record['param']: fields['param']=record['param']
         if record['version']=='v2':
@@ -150,7 +154,7 @@ class Merchants:
     def query(self, order):
         record = self.order(order['out_trade_no'])
         return {'trade_no':record['platform_no'],'out_trade_no':record['merchant_no'],'pid':record['pid'],
-                'api_trade_no':order['trade_no'] or '', 'type':order['channel'],'name':order['subject'],'money':order['amount'],
+                'api_trade_no':order['trade_no'] or '', 'type':EPAY_TYPES.get(order['channel'],order['channel']),'name':order['subject'],'money':order['amount'],
                 'param':record['param'],'status':1 if order['paid_at'] else 0,'state':'EXPIRED' if order['status']=='CREATED' and order['expires_at']<=int(time.time()) else order['status'],
                 'addtime':time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(order['created_at'])),
                 'endtime':time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(order['paid_at'])) if order['paid_at'] else ''}

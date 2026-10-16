@@ -19,6 +19,30 @@ import base64
 import re
 
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+
+
+class KeyProblem(ValueError):
+    """A pasted key that cannot be used. `reason` is a stable code the console turns into an explanation."""
+
+    def __init__(self, reason: str, bits: int | None = None):
+        super().__init__(reason)
+        self.reason, self.bits = reason, bits
+
+
+_PEM_BLOCK = re.compile(r"-----BEGIN ([A-Z0-9 ]+?)-----(.*?)-----END \1-----", re.S)
+
+
+def _prepare(raw) -> str:
+    """Undo common copy-and-paste damage: quotes, CRLF, escaped newlines and stray prompt text."""
+    text = str(raw or "").strip().strip("\"'`").strip()
+    if "\n" not in text and "\\n" in text:
+        text = text.replace("\\n", "\n")
+    return text.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def _blocks(text: str) -> list:
+    return [(m.group(1), m.group(2)) for m in _PEM_BLOCK.finditer(text)]
 
 
 def _clean_b64(text: str) -> str:
@@ -35,84 +59,113 @@ def _looks_like_pem(text: str) -> bool:
 
 
 # ---------------------------------------------------------------- 私钥
+def load_private_key(raw: str):
+    """Return an RSA private key object, or raise KeyProblem(reason) saying why the paste is unusable.
+
+    Accepts PKCS#1 / PKCS#8 PEM (also when other PEM blocks such as a certificate were pasted with it)
+    and bare Base64 DER. Reasons: empty, certificate, public_key, encrypted, incomplete, unreadable, not_rsa.
+    """
+    text = _prepare(raw)
+    if not text:
+        raise KeyProblem("empty")
+    blocks = _blocks(text)
+    candidates = [(label, body) for label, body in blocks if label.endswith("PRIVATE KEY")]
+    if candidates:
+        label, body = candidates[0]
+        if label.startswith("ENCRYPTED") or "ENCRYPTED" in body.split("\n\n", 1)[0]:
+            raise KeyProblem("encrypted")
+        pem = f"-----BEGIN {label}-----{body}-----END {label}-----\n".encode()
+        try:
+            key = serialization.load_pem_private_key(pem, password=None)
+        except Exception:  # noqa: BLE001
+            raise KeyProblem("incomplete" if len(body.strip()) < 600 else "unreadable") from None
+    elif blocks:
+        labels = {label for label, _ in blocks}
+        raise KeyProblem("certificate" if "CERTIFICATE" in labels else "public_key" if any(x.endswith("PUBLIC KEY") for x in labels) else "unreadable")
+    elif "-----BEGIN" in text:
+        raise KeyProblem("incomplete")
+    else:
+        try:
+            der = base64.b64decode(_clean_b64(text), validate=True)
+        except Exception:  # noqa: BLE001
+            raise KeyProblem("unreadable") from None
+        try:
+            key = serialization.load_der_private_key(der, password=None)
+        except Exception:  # noqa: BLE001
+            try:  # a bare PKCS#1 DER that cryptography will not take
+                import rsa as _rsa
+
+                pkcs1 = _rsa.PrivateKey.load_pkcs1(der, format="DER")
+                key = serialization.load_pem_private_key(pkcs1.save_pkcs1("PEM"), password=None)
+            except Exception:  # noqa: BLE001
+                raise KeyProblem("unreadable") from None
+    if not isinstance(key, rsa.RSAPrivateKey):
+        raise KeyProblem("not_rsa")
+    return key
+
+
 def normalize_private_key(raw: str) -> str:
     """把任意形式的应用私钥统一为 PKCS#1 PEM。
 
     支持输入：
       - PKCS#1 PEM（BEGIN RSA PRIVATE KEY）
-      - PKCS#8 PEM（BEGIN PRIVATE KEY）
+      - PKCS#8 PEM（BEGIN PRIVATE KEY），例如微信支付的 apiclient_key.pem
       - 裸 Base64（PKCS#1 或 PKCS#8 DER）
     输出：PKCS#1 PEM
     """
-    if not raw or not raw.strip():
-        raise ValueError("应用私钥为空")
-    text = raw.strip()
-
-    key = None
-    if _looks_like_pem(text):
-        key = serialization.load_pem_private_key(text.encode("utf-8"), password=None)
-    else:
-        der = base64.b64decode(_clean_b64(text))
-        try:
-            key = serialization.load_der_private_key(der, password=None)
-        except Exception:  # noqa: BLE001
-            # 兜底：按 PKCS#1 处理（cryptography 对部分 PKCS#1 DER 支持有限）
-            key = None
-        if key is None:
-            import rsa as _rsa
-
-            pem = (
-                "-----BEGIN RSA PRIVATE KEY-----\n"
-                + _clean_b64(text)
-                + "\n-----END RSA PRIVATE KEY-----"
-            )
-            key = _rsa.PrivateKey.load_pkcs1(pem.encode("utf-8"), format="PEM")
-
-    if hasattr(key, "private_bytes"):
-        return key.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.TraditionalOpenSSL,
-            encryption_algorithm=serialization.NoEncryption(),
-        ).decode("utf-8")
-
-    # cryptography 加载失败、由 rsa 库加载的情况
-    return key.save_pkcs1("PEM").decode("utf-8")
+    return load_private_key(raw).private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode("utf-8")
 
 
 # ---------------------------------------------------------------- 公钥
+def load_public_key(raw: str):
+    """Return an RSA public key object, or raise KeyProblem(reason). Reasons add `private_key` to the private-key list."""
+    text = _prepare(raw)
+    if not text:
+        raise KeyProblem("empty")
+    blocks = _blocks(text)
+    candidates = [(label, body) for label, body in blocks if label.endswith("PUBLIC KEY")]
+    if candidates:
+        label, body = candidates[0]
+        try:
+            key = serialization.load_pem_public_key(f"-----BEGIN {label}-----{body}-----END {label}-----\n".encode())
+        except Exception:  # noqa: BLE001
+            raise KeyProblem("incomplete" if len(body.strip()) < 300 else "unreadable") from None
+    elif blocks:
+        labels = {label for label, _ in blocks}
+        raise KeyProblem("certificate" if "CERTIFICATE" in labels else "private_key" if any(x.endswith("PRIVATE KEY") for x in labels) else "unreadable")
+    elif "-----BEGIN" in text:
+        raise KeyProblem("incomplete")
+    else:
+        try:
+            der = base64.b64decode(_clean_b64(text), validate=True)
+        except Exception:  # noqa: BLE001
+            raise KeyProblem("unreadable") from None
+        try:  # SubjectPublicKeyInfo or a bare PKCS#1 RSAPublicKey
+            key = serialization.load_der_public_key(der)
+        except Exception:  # noqa: BLE001
+            raise KeyProblem("unreadable") from None
+    if not isinstance(key, rsa.RSAPublicKey):
+        raise KeyProblem("not_rsa")
+    return key
+
+
 def normalize_public_key(raw: str) -> str:
     """把支付宝公钥统一为**裸 Base64**（SubjectPublicKeyInfo）。
 
     支持输入：
       - 裸 Base64（开放平台复制的默认形式）
-      - PEM（BEGIN PUBLIC KEY / BEGIN RSA PUBLIC KEY）
+      - PEM（BEGIN PUBLIC KEY / BEGIN RSA PUBLIC KEY），例如微信支付的 pub_key.pem
     输出：裸 Base64（SDK 会自动补 PEM 头尾）
     """
-    if not raw or not raw.strip():
-        raise ValueError("支付宝公钥为空")
-    text = raw.strip()
-
-    if _looks_like_pem(text):
-        key = serialization.load_pem_public_key(text.encode("utf-8"))
-    else:
-        der = base64.b64decode(_clean_b64(text))
-        try:
-            key = serialization.load_der_public_key(der)
-        except Exception:  # noqa: BLE001
-            import rsa as _rsa
-
-            pub = _rsa.PublicKey.load_pkcs1(der, format="DER")
-            key = pub
-
-    if hasattr(key, "public_bytes"):
-        der_out = key.public_bytes(
-            encoding=serialization.Encoding.DER,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo,
-        )
-        return base64.b64encode(der_out).decode("utf-8")
-
-    # rsa 库对象兜底
-    return base64.b64encode(key.save_pkcs1("DER")).decode("utf-8")
+    der_out = load_public_key(raw).public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    return base64.b64encode(der_out).decode("utf-8")
 
 
 # ---------------------------------------------------------------- 自检

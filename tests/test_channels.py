@@ -112,7 +112,6 @@ class ChannelTests(unittest.TestCase):
     def test_other_channel_configuration_saves_without_pretending_adapter_exists(self):
         admin, headers = self.admin()
         values = {
-            'wechat': {'app_id': 'wx0123456789abcdef', 'mch_id': '1234567890', 'api_v3_key': 'a' * 32},
             'paypal': {'env': 'sandbox', 'client_id': 'paypal_test_client_id', 'client_secret': 'paypal_test_secret'},
             'stripe': {'publishable_key': 'pk_test_' + 'a' * 24, 'secret_key': 'sk_test_' + 'b' * 24, 'webhook_secret': 'whsec_' + 'c' * 24},
         }
@@ -121,10 +120,18 @@ class ChannelTests(unittest.TestCase):
                 result = self.save(admin, headers, name, fields)
                 self.assertEqual(result.status_code, 200)
                 self.assertFalse(result.json['channel']['integrated'])
-        self.assertEqual(self.create(channel='wechat').status_code, 422)
+                self.assertEqual(self.create(channel=name).status_code, 422)
         logs = json.dumps(admin.get('/api/admin/events').json)
         self.assertNotIn('paypal_test_secret', logs)
         self.assertNotIn('b' * 24, logs)
+
+    def test_wechat_is_integrated_but_stays_unusable_until_every_credential_is_present(self):
+        admin, headers = self.admin()
+        partial = self.save(admin, headers, 'wechat', {'app_id': 'wx0123456789abcdef', 'mch_id': '1234567890', 'api_v3_key': 'a' * 32})
+        self.assertEqual(partial.status_code, 200)
+        self.assertTrue(partial.json['channel']['integrated'])
+        self.assertFalse(partial.json['channel']['configured'])
+        self.assertEqual(self.create(channel='wechat').status_code, 503)
 
     def test_lost_master_key_fails_closed_without_replacing_it(self):
         admin, headers = self.admin()
