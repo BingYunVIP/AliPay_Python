@@ -58,7 +58,8 @@ def run():
         pay=create_pay({'TESTING':True,'PUBLIC_BASE_URL':f'http://localhost:{pay_port}','BYPAY_LOCAL_CALLBACK_PORT':demo_port,'DATABASE':str(data/'pay/web.sqlite3'),
                         'ALLOW_REGISTRATION':'true','BYPAY_ADMIN_EMAIL':'fixture-admin','BYPAY_ADMIN_PASSWORD':'Fixture-password-123',
                         'BYPAY_TRUST_PROXY':'0','ALIPAY_ENV':'sandbox','ALIPAY_APP_ID':'2026000000000000','ALIPAY_SELLER_ID':'2088000000000000',
-                        'ALIPAY_PRIVATE_KEY':private,'ALIPAY_PUBLIC_KEY':public_pem(provider),'ALIPAY_PRIVATE_KEY_FILE':'','ALIPAY_PUBLIC_KEY_FILE':'','ALIPAY_NOTIFY_URL':''})
+                        'ALIPAY_PRIVATE_KEY':private,'ALIPAY_PUBLIC_KEY':public_pem(provider),'ALIPAY_PRIVATE_KEY_FILE':'','ALIPAY_PUBLIC_KEY_FILE':'','ALIPAY_NOTIFY_URL':'',
+                        'FRONTEND_DIST':os.environ.get('BYPAY_SMOKE_DIST',str(ROOT/'frontend/dist'))})
         env=data/'demo/.env';env.parent.mkdir();env.touch(mode=0o600)
         for key,value in {'PAY_ORIGIN':pay_origin,'DEMO_ORIGIN':demo_origin,'PAY_API_VERSION':'v1'}.items():set_key(env,key,value)
         spec=importlib.util.spec_from_file_location('merchant_smoke',ROOT/'merchant-demo/app.py');module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
@@ -74,8 +75,9 @@ def run():
                 merchant.goto(pay_origin+'/register');merchant.wait_for_load_state('networkidle')
                 merchant.locator('#email').fill('smoke-merchant@example.test');merchant.locator('#password').fill('Fixture-password-123');merchant.locator('form button.button').click()
                 merchant.wait_for_url('**/dashboard')
-                merchant.goto(pay_origin+'/dashboard?tab=keys');merchant.wait_for_load_state('networkidle')
-                merchant.get_by_role('tab',name='V2 · RSA').click()
+                merchant.goto(pay_origin+'/dashboard?tab=account');merchant.wait_for_load_state('networkidle')
+                merchant.get_by_role('button',name='接口配置',exact=True).click();merchant_api=merchant.get_by_role('dialog',name='商户接口配置')
+                merchant_api.get_by_role('tab',name='V2 · RSA').click()
                 expect(merchant.get_by_role('button',name='生成 RSA 密钥对',exact=True)).to_be_visible()
                 merchant.get_by_role('button',name='生成 RSA 密钥对',exact=True).click()
                 merchant.locator('dialog').get_by_role('button',name='确认生成',exact=True).click()

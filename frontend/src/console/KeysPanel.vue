@@ -1,12 +1,12 @@
 <script setup>
 import { inject, onMounted, ref, computed, watch } from 'vue'
-import { useRoute } from 'vue-router'
-import { api, copyText, t } from '../state'
+import { api, copyText } from '../state'
 import Icon from '../components/Icon.vue'
-const props=defineProps({merchantId:[String,Number],embedded:Boolean})
+// Shown inside the merchant API dialog: another merchant's credentials for the administrator, your own otherwise
+const props=defineProps({merchantId:[String,Number]})
 const selectedVersion=ref('v1')
-const c = inject('console'), route = useRoute(), profile = ref(null), publicKey = ref(''), privateKey = ref(''), reveal = ref(false), busy = ref(false), error = ref(''), notice = ref(''), action = ref(''), dialog = ref(null)
-const endpoint = computed(() => '/api/merchant/config' + ((props.merchantId || route.query.merchant_id) ? '?merchant_id='+encodeURIComponent(props.merchantId || route.query.merchant_id) : ''))
+const c = inject('console'), profile = ref(null), publicKey = ref(''), privateKey = ref(''), reveal = ref(false), busy = ref(false), error = ref(''), notice = ref(''), action = ref(''), dialog = ref(null)
+const endpoint = computed(() => '/api/merchant/config' + (props.merchantId ? '?merchant_id='+encodeURIComponent(props.merchantId) : ''))
 const errors = {invalid_rsa_key:'请输入有效的 RSA 公钥',merchant_public_key_required:'请先配置商户 RSA 公钥'}
 async function load() { try { profile.value = await api(endpoint.value); publicKey.value = profile.value.merchant_public_key } catch (e) { c.report(e) } }
 onMounted(load)
@@ -35,7 +35,6 @@ async function generate() {
 function download() { const url=URL.createObjectURL(new Blob([privateKey.value],{type:'application/x-pem-file'}));const link=document.createElement('a');link.href=url;link.download=`merchant-${profile.value.merchant_id}-private.pem`;link.click();URL.revokeObjectURL(url) }
 </script>
 <template>
-  <div v-if="!embedded" class="console-page-heading"><h2>{{ t('接口配置','Merchant API') }}</h2></div>
   <p v-if="error" class="error-box" role="alert">{{ error }}</p><p v-if="notice" class="field-hint" role="status">{{ notice }}</p>
   <template v-if="profile">
     <section class="hig-card merchant-identity"><label>接口地址<div class="credential-row"><input :value="profile.interface_url" readonly /><button class="icon-button" aria-label="复制接口地址" @click="copy(profile.interface_url)"><Icon name="copy" :size="17"/></button></div></label><label>商户 ID<div class="credential-row"><input :value="profile.merchant_id" readonly/><button class="icon-button" aria-label="复制商户 ID" @click="copy(profile.merchant_id)"><Icon name="copy" :size="17"/></button></div></label></section>

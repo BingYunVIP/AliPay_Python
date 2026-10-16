@@ -58,7 +58,7 @@ onBeforeUnmount(() => clearTimeout(copyTimer))
     <section class="byh-flow-sec byh-wrap" :aria-label="t('统一支付接入示意', 'Unified payment integration')">
       <div class="byh-flow">
         <div class="byh-col byh-col-in">
-          <h2 class="byh-col-h">{{ t('产品名称', 'Payment products') }}</h2>
+          <h2 class="byh-col-h">{{ t('产品形态', 'Payment products') }}</h2>
           <div class="byh-list">
             <div v-for="item in products" :key="item.key" class="byh-node"><Icon :name="item.icon" :size="29" /><b>{{ t(item.zh, item.en) }}</b></div>
           </div>

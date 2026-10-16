@@ -24,7 +24,7 @@ def run():
     parser=argparse.ArgumentParser();parser.add_argument('--artifacts',default='/tmp/bypay-platform-smoke');args=parser.parse_args();evidence=Path(args.artifacts);evidence.mkdir(parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='bypay-platform-runtime-') as folder:
         key=rsa.generate_private_key(public_exponent=65537,key_size=2048)
-        app=create_app({'TESTING':True,'DATABASE':str(Path(folder)/'web.sqlite3'),'PUBLIC_BASE_URL':'http://127.0.0.1:18889','BYPAY_ADMIN_EMAIL':'admin','BYPAY_ADMIN_PASSWORD':'admin','ALLOW_REGISTRATION':'true','ALIPAY_ENV':'sandbox','ALIPAY_APP_ID':'2026000000000000','ALIPAY_SELLER_ID':'2088000000000000','ALIPAY_PRIVATE_KEY':key.private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.PKCS8,serialization.NoEncryption()).decode(),'ALIPAY_PUBLIC_KEY':public_pem(key),'BYPAY_TRUST_PROXY':'0'})
+        app=create_app({'TESTING':True,'DATABASE':str(Path(folder)/'web.sqlite3'),'PUBLIC_BASE_URL':'http://127.0.0.1:18889','BYPAY_ADMIN_EMAIL':'admin','BYPAY_ADMIN_PASSWORD':'admin','ALLOW_REGISTRATION':'true','ALIPAY_ENV':'sandbox','ALIPAY_APP_ID':'2026000000000000','ALIPAY_SELLER_ID':'2088000000000000','ALIPAY_PRIVATE_KEY':key.private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.PKCS8,serialization.NoEncryption()).decode(),'ALIPAY_PUBLIC_KEY':public_pem(key),'BYPAY_TRUST_PROXY':'0','FRONTEND_DIST':__import__('os').environ.get('BYPAY_SMOKE_DIST',str(ROOT/'frontend/dist'))})
         user=app.extensions['store'].register('review@example.test','Review-password-123');app.extensions['merchants'].ensure(user['id']);app.extensions['operations'].ensure(user['id'])
         server=make_server('127.0.0.1',18889,app,threaded=True,request_handler=Quiet);threading.Thread(target=server.serve_forever,daemon=True).start()
         origin='http://127.0.0.1:18889'
@@ -43,11 +43,11 @@ def run():
                 qr=page.locator('.payment-qr-card .qr-expand img');response=page.request.get(origin+qr.get_attribute('src'));assert '<svg' in response.text() and '#075fbd' in response.text()
                 page.screenshot(path=str(evidence/'payment-qr.png'))
                 page.goto(origin+'/dashboard?tab=orders');page.wait_for_load_state('networkidle');page.get_by_label('支付场景筛选').select_option('page');expect(page.get_by_role('option',name='全部渠道',exact=True)).to_have_count(1)
-                page.get_by_role('button',name='选择本页',exact=True).click()
-                with page.expect_download() as download:page.get_by_role('button',name='导出选中 CSV',exact=True).click()
+                page.get_by_role('button',name='全选',exact=True).click()
+                with page.expect_download() as download:page.get_by_role('button',name='导出选择 CSV',exact=True).click()
                 downloaded=download.value;assert downloaded.suggested_filename.endswith('.csv')
                 page.get_by_role('button',name='删除选中',exact=True).click();confirmation=page.get_by_role('dialog');confirmation.get_by_role('button',name='确认',exact=False).click();expect(page.get_by_text('暂无匹配订单',exact=True)).to_be_visible()
-                page.get_by_label('订单列表范围').select_option('1');page.get_by_role('button',name='全选筛选结果',exact=True).click();page.get_by_role('button',name='恢复选中',exact=True).click();page.get_by_role('dialog').get_by_role('button',name='确认',exact=False).click()
+                page.get_by_label('订单列表范围').select_option('1');page.get_by_role('button',name='全选',exact=True).click();page.get_by_role('button',name='恢复选中',exact=True).click();page.get_by_role('dialog').get_by_role('button',name='确认',exact=False).click()
                 print('PASS no pause control, merchant modal V1/V2, single channel select, branded QR and batch/export',flush=True)
                 page.goto(origin+'/dashboard?tab=settings');page.wait_for_load_state('networkidle');page.get_by_role('tab',name='邮箱与模板').click()
                 expect(page.get_by_label('SMTP 服务器',exact=True)).to_have_value('smtp.qq.com')

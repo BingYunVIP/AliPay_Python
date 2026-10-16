@@ -250,11 +250,35 @@ class PlatformTests(unittest.TestCase):
         with self.store.connect() as db:db.execute("UPDATE orders SET status='REFUNDING' WHERE out_trade_no=?",(b['out_trade_no'],))
         ids=[a['out_trade_no'],b['out_trade_no'],foreign['out_trade_no']]
         csv=self.client.post('/api/console/orders/export?product=page',json={'ids':ids},headers=self.headers)
-        self.assertEqual(csv.status_code,200);self.assertIn(a['out_trade_no'],csv.text);self.assertNotIn(foreign['out_trade_no'],csv.text);self.assertNotIn(b['out_trade_no'],csv.text)
+        self.assertEqual(csv.status_code,200);self.assertIn(a['out_trade_no'],csv.text);self.assertNotIn(foreign['out_trade_no'],csv.text)
+        self.assertIn(b['out_trade_no'],csv.text)  # an explicit selection is not narrowed by the filters active at export time
         response=self.client.post('/api/console/orders/batch',json={'ids':ids,'action':'delete'},headers=self.headers)
         self.assertEqual(response.json['changed'],1);self.assertEqual(response.json['skipped'],[b['out_trade_no']]);self.assertFalse(self.store.order(foreign['out_trade_no'])['deleted_at'])
-        self.assertEqual(self.client.post('/api/console/orders/batch',json={'all_matching':True,'action':'delete'}).status_code,403)
+        self.assertEqual(self.client.post('/api/console/orders/batch',json={'all_matching':True,'action':'delete'},headers=self.headers).json['error'],'invalid_selection')
         self.balanced()
+
+    def test_order_ids_are_scoped_and_selections_survive_later_filters(self):
+        a=self.create().json['order'];b=self.create(product='wap').json['order'];other,_,other_headers=self.register('ids-other@example.test');foreign=self.create(other,other_headers).json['order']
+        listed=self.client.get('/api/console/orders/ids').json
+        self.assertEqual(set(listed['ids']),{a['out_trade_no'],b['out_trade_no']});self.assertFalse(listed['limited'])
+        self.assertEqual(self.client.get('/api/console/orders/ids?product=wap').json['ids'],[b['out_trade_no']])
+        self.assertEqual(self.client.get('/api/console/orders/ids?search=no-such-order').json['ids'],[])
+        self.assertEqual(self.client.get('/api/console/orders/ids?status=bogus').status_code,400)
+        self.assertEqual(self.app.test_client().get('/api/console/orders/ids').status_code,401)
+        ids=[a['out_trade_no'],b['out_trade_no'],foreign['out_trade_no']]
+        csv=self.client.post('/api/console/orders/export?search=gone&status=PAID&product=app',json={'ids':ids},headers=self.headers)
+        self.assertEqual(csv.status_code,200);self.assertIn(a['out_trade_no'],csv.text);self.assertIn(b['out_trade_no'],csv.text);self.assertNotIn(foreign['out_trade_no'],csv.text)
+        self.assertEqual(self.client.post('/api/console/orders/batch?search=gone',json={'ids':ids,'action':'delete'},headers=self.headers).json['changed'],2)
+        self.assertEqual(self.client.get('/api/console/orders/ids').json['ids'],[])
+        self.assertEqual(set(self.client.get('/api/console/orders/ids?deleted=1').json['ids']),{a['out_trade_no'],b['out_trade_no']})
+        self.assertEqual(self.client.post('/api/console/orders/batch?deleted=1&status=PAID',json={'ids':ids,'action':'restore'},headers=self.headers).json['changed'],2)
+        self.assertFalse(self.store.order(foreign['out_trade_no'])['deleted_at'])
+
+    def test_order_ids_listing_stops_at_the_batch_limit(self):
+        cfg=self.app.extensions['alipay_config']
+        for i in range(1001):self.store.create_order(self.user,{'out_trade_no':f'LIMIT_{i:05}','subject':'x','amount':'1.00','product':'page'},'https://example.test',cfg)
+        listed=self.client.get('/api/console/orders/ids').json
+        self.assertEqual(len(listed['ids']),1000);self.assertTrue(listed['limited'])
 
     def test_otp_five_wrong_numeric_codes_lock_the_original_code(self):
         self.smtp(registration_code=True);self.mail.issue_code('lock@example.test','127.0.0.1')

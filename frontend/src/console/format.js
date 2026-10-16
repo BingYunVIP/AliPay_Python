@@ -47,6 +47,7 @@ const messages = {
   trade_conflict: ['支付宝交易号已关联其他订单', 'Trade number belongs to another order'],
   browser_return_is_not_payment_confirmation: ['浏览器同步返回（不确认到账）', 'Browser returned (does not confirm payment)'],
   checkout_open_requested: ['用户打开支付宝收银台', 'User opened Alipay checkout'],
+  mobile_checkout_opened: ['手机收银台短链接被打开（不确认到账）', 'Mobile checkout link opened (does not confirm payment)'],
   payment_provider_error: ['支付宝接口调用失败', 'Alipay API request failed'],
   payment_not_configured: ['支付宝参数尚未配置完整', 'Alipay configuration incomplete'],
   TRADE_SUCCESS: ['支付成功，订单已入账', 'Payment confirmed'],

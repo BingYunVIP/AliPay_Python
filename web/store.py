@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 import secrets
 import sqlite3
 import time
@@ -59,6 +60,9 @@ class Store:
                     reason TEXT NOT NULL, created_at INTEGER NOT NULL,
                     stage TEXT NOT NULL DEFAULT 'notification', details TEXT NOT NULL DEFAULT '{}', user_id INTEGER);
                 CREATE TABLE IF NOT EXISTS limits (key TEXT PRIMARY KEY, count INTEGER, expires INTEGER);
+                CREATE TABLE IF NOT EXISTS short_links (
+                    token TEXT PRIMARY KEY, out_trade_no TEXT UNIQUE NOT NULL REFERENCES orders(out_trade_no),
+                    created_at INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS console_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS service_health (name TEXT PRIMARY KEY, last_seen INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS channel_versions (id INTEGER PRIMARY KEY, channel TEXT NOT NULL, payload BLOB NOT NULL, created_at INTEGER NOT NULL);
@@ -187,6 +191,26 @@ class Store:
     def order(self, number):
         with self.connect() as db:
             row = db.execute("SELECT * FROM orders WHERE out_trade_no=?", (number,)).fetchone()
+            return dict(row) if row else None
+
+    def short_link(self, number):
+        """One stable token per order: a short URL keeps the mobile-checkout QR small enough to scan."""
+        with self.connect() as db:
+            for _ in range(5):
+                row = db.execute("SELECT token FROM short_links WHERE out_trade_no=?", (number,)).fetchone()
+                if row: return row["token"]
+                try:
+                    token = secrets.token_urlsafe(9)
+                    db.execute("INSERT INTO short_links(token,out_trade_no,created_at) VALUES (?,?,?)", (token, number, int(time.time())))
+                    return token
+                except sqlite3.IntegrityError:
+                    continue
+        raise RuntimeError("short_link_unavailable")
+
+    def order_for_short_link(self, token):
+        if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{12}", token): return None
+        with self.connect() as db:
+            row = db.execute("SELECT o.* FROM short_links s JOIN orders o USING(out_trade_no) WHERE s.token=?", (token,)).fetchone()
             return dict(row) if row else None
 
     def create_order(self, user_id, payload, pay_url, cfg, return_token=None, payment_payload=None, request_hash=None):

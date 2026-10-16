@@ -8,9 +8,9 @@ export const isAdmin = computed(() => auth.user?.role === 'admin')
 
 watch(locale, value => {
   document.documentElement.lang = value === 'zh' ? 'zh-CN' : 'en'
-  document.title = value === 'zh' ? '冰云支付 · Pay' : 'Pay · BingYun'
+  document.title = value === 'zh' ? '冰云支付 - 聚合支付' : 'BingYun Pay - Payment Aggregation'
   try { localStorage.setItem('bypay-locale', value) } catch { /* Storage is optional. */ }
-})
+}, { immediate: true })
 watch(dark, value => {
   document.documentElement.classList.toggle('dark', value)
   document.querySelector('meta[name="theme-color"]').content = value ? '#0e1116' : '#f4f5f7'

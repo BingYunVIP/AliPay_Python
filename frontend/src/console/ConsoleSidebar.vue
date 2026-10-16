@@ -11,7 +11,7 @@ defineProps({ compact: Boolean })
     <RouterLink to="/" class="console-brand" :title="t('返回冰云支付首页', 'Return to Pay home')"><Brand name="bingyun" /><span>{{ t('冰云支付', 'Pay') }}</span></RouterLink>
     <nav :aria-label="t('控制台导航', 'Console navigation')">
       <template v-for="group in ['core', 'system', 'account']" :key="group">
-        <p class="sidebar-group">{{ ({ core: t('核心收单业务', 'PAYMENT OPERATIONS'), system: t('系统与安全', 'SYSTEM & SECURITY'), account: t('开发者', 'DEVELOPER') })[group] }}</p>
+        <p class="sidebar-group">{{ ({ core: t('核心收单业务', 'PAYMENT OPERATIONS'), system: t('系统与安全', 'SYSTEM & SECURITY'), account: t('账户', 'ACCOUNT') })[group] }}</p>
         <button v-for="item in c.menus.value.filter(m => m.group === group)" :key="item.id" class="sidebar-link" :class="{ active: c.tab.value === item.id }" :aria-label="item.label" :aria-current="c.tab.value === item.id ? 'page' : undefined" :title="compact ? item.label : undefined" @click="c.navigate(item.id)">
           <Icon :name="item.icon" :size="19" /><span>{{ item.label }}</span>
           <small v-if="item.id === 'webhook' && c.overview.value?.callbacks.failed" class="sidebar-count">{{ c.overview.value.callbacks.failed }}</small>

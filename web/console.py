@@ -38,9 +38,11 @@ def install_console(app, store, auth, trace, cfg, ready, ApiError):
         if period not in {"today", "7d", "30d"}: raise ApiError("invalid_period")
         return int((start - timedelta(days={"today": 0, "7d": 6, "30d": 29}[period])).timestamp())
 
-    def order_filter():
+    def order_filter(selection=False):
         where, args = scope("o.user_id")
         where += " AND o.deleted_at IS " + ("NOT NULL" if request.args.get("deleted") == "1" else "NULL")
+        # An explicit selection only belongs to its owner and list scope; later searches or filters never narrow it.
+        if selection: return where, args
         channel=request.args.get("channel","all")
         if channel != "all":
             if channel not in {"alipay","wechat","paypal","stripe"}: raise ApiError("invalid_channel_config")
@@ -118,16 +120,21 @@ def install_console(app, store, auth, trace, cfg, ready, ApiError):
             rows = db.execute(f"SELECT o.*,c.name config_name FROM orders o LEFT JOIN channel_configs c ON c.id=o.payment_config_id WHERE {where} ORDER BY o.created_at DESC,o.out_trade_no DESC LIMIT ? OFFSET ?", [*args, size, (page - 1) * size]).fetchall()
         return jsonify(orders=[present_order(row) for row in rows], total=total, page=page, page_size=size)
 
+    @app.get("/api/console/orders/ids")
+    @auth(session_only=True)
+    def order_ids():
+        where, args = order_filter()
+        with store.connect() as db:
+            rows = db.execute(f"SELECT o.out_trade_no FROM orders o WHERE {where} ORDER BY o.created_at DESC,o.out_trade_no DESC LIMIT 1001", args).fetchall()
+        return jsonify(ids=[row[0] for row in rows[:1000]], limited=len(rows) > 1000)
+
     def selected_filter(payload):
         if not isinstance(payload,dict):raise ApiError('invalid_json')
-        where,args=order_filter()
         ids=payload.get('ids')
-        if payload.get('all_matching') is True:
-            if ids:raise ApiError('invalid_selection')
-        else:
-            if not isinstance(ids,list) or not 1<=len(ids)<=1000 or any(not isinstance(x,str) or len(x)>64 for x in ids):raise ApiError('invalid_selection')
-            ids=list(dict.fromkeys(ids));where+=' AND o.out_trade_no IN ('+','.join('?'*len(ids))+')';args+=ids
-        return where,args
+        if not isinstance(ids,list) or not 1<=len(ids)<=1000 or any(not isinstance(x,str) or len(x)>64 for x in ids):raise ApiError('invalid_selection')
+        where,args=order_filter(selection=True)
+        ids=list(dict.fromkeys(ids))
+        return where+' AND o.out_trade_no IN ('+','.join('?'*len(ids))+')',args+ids
 
     @app.post('/api/console/orders/batch')
     @auth(session_only=True)

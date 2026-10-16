@@ -5,7 +5,7 @@ import { useConsole } from '../console/useConsole'
 import Icon from '../components/Icon.vue'
 import ConsoleSidebar from '../console/ConsoleSidebar.vue'
 import OverviewPanel from '../console/OverviewPanel.vue'
-import OrderDrawer from '../console/OrderDrawer.vue'
+import OrderDialog from '../console/OrderDialog.vue'
 import '../console/console.css'
 const c = useConsole()
 provide('console', c)
@@ -21,7 +21,6 @@ const panels = {
   users: defineAsyncComponent(() => import('../console/UsersPanel.vue')),
   settings: defineAsyncComponent(() => import('../console/SettingsPanel.vue')),
   logs: defineAsyncComponent(() => import('../console/LogsPanel.vue')),
-  keys: defineAsyncComponent(() => import('../console/KeysPanel.vue')),
 }
 watch(c.tab, () => { mobileNav.value?.close(); c.error.value = ''; document.getElementById('console-scroll')?.scrollTo({ top: 0 }) })
 function toggleSidebar() { if (window.matchMedia('(max-width: 760px)').matches) mobileNav.value.showModal(); else compact.value = !compact.value }
@@ -35,6 +34,6 @@ function toggleSidebar() { if (window.matchMedia('(max-width: 760px)').matches) 
     </div>
     <dialog ref="mobileNav" class="console-nav-dialog" :aria-label="t('控制台导航', 'Console navigation')"><button class="icon-button nav-dialog-close" :aria-label="t('关闭导航', 'Close navigation')" @click="mobileNav.close()"><Icon name="x" /></button><ConsoleSidebar /></dialog>
     <div v-if="c.notice.value" class="console-toast" role="status"><Icon name="success" :size="18" />{{ c.notice.value }}</div>
-    <OrderDrawer />
+    <OrderDialog />
   </div>
 </template>

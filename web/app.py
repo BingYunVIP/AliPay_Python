@@ -205,7 +205,7 @@ def create_app(settings=None):
             response.headers.pop('X-Frame-Options', None)
             response.headers['Content-Security-Policy'] = response.headers['Content-Security-Policy'].replace("frame-ancestors 'none'", "frame-ancestors 'self' " + g.cashier_parent)
             response.headers['Cache-Control'] = 'no-store'
-        if request.path.startswith(("/api/", "/alipay/")) or request.path.endswith('.php'):
+        if request.path.startswith(("/api/", "/alipay/", "/m/")) or request.path.endswith('.php'):
             response.headers["Cache-Control"] = "no-store"
         if secure:
             response.headers["Strict-Transport-Security"] = "max-age=31536000"
@@ -392,11 +392,33 @@ def create_app(settings=None):
         limit("qr:" + str(g.user["id"]), 60)
         if not order["pay_url"]: raise ApiError("qr_not_available", 422)
         if order["status"] != "CREATED" or order["expires_at"] <= int(time.time()): raise ApiError("payment_order_expired", 409)
+        if order["product"] == "wap":
+            # The signed URL is ~1000 characters: its QR is a 160-module grid that cannot hold a logo or be
+            # scanned at card size. Encode a short redirect on the configured site address instead (a phone
+            # must be able to reach it, so it never comes from the Host header).
+            value = site.read()["origin"] + "/m/" + store.short_link(number)
+        else:
+            value = order["cashier_qr"] or order["pay_url"]
         try:
-            svg = payment_qr_svg(order["cashier_qr"] or order["pay_url"], order["channel"])
+            svg = payment_qr_svg(value, order["channel"])
         except ValueError:
             raise ApiError("qr_not_available", 422)
         return Response(svg, mimetype="image/svg+xml")
+
+    @app.get("/m/<token>")
+    def mobile_checkout(token):
+        from .cashier import allowed_url
+        limit("short:" + str(request.remote_addr), 120)
+        text = lambda message, status: (message, status, {"Content-Type": "text/plain; charset=utf-8"})
+        order = store.order_for_short_link(token)
+        if not order or order["deleted_at"] or order["product"] != "wap": return text("订单不存在", 404)
+        if order["status"] != "CREATED" or order["expires_at"] <= int(time.time()): return text("订单已结束或已过期，请返回商户重新下单", 410)
+        try:
+            target = allowed_url(order["pay_url"])
+        except ValueError:
+            return text("订单暂不可用", 404)
+        trace("checkout.clicked", "mobile_checkout_opened", {"note": "手机访问短链接，不作为付款凭证。"}, order["out_trade_no"], order["user_id"])
+        return redirect(target, 302)
 
     @app.post("/api/v1/payments/<number>/prepare-qr")
     @auth()

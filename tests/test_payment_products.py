@@ -118,6 +118,41 @@ class ProductTests(unittest.TestCase):
         self.notify(self.notification())
         self.assertEqual(self.client.get('/api/v1/payments/TEST_ORDER_0001/qr.svg').status_code, 409)
 
+    def test_mobile_checkout_qr_is_a_compact_short_link_that_redirects_only_for_live_orders(self):
+        order = self.create(product='wap').json['order']
+        number = order['out_trade_no']
+        self.assertGreater(len(order['pay_url']), 600)
+        with patch('web.qrcode.payment_qr_svg', return_value='<svg/>') as encode:
+            self.assertEqual(self.client.get(f'/api/v1/payments/{number}/qr.svg').status_code, 200)
+            self.assertEqual(self.client.get(f'/api/v1/payments/{number}/qr.svg').status_code, 200)
+        value = encode.call_args.args[0]
+        self.assertRegex(value, r'^https://pay\.example\.test/m/[A-Za-z0-9_-]{12}$')
+        self.assertEqual(encode.call_args_list[0].args, encode.call_args_list[1].args)
+        token = value.rsplit('/', 1)[1]
+        # the real encoder keeps this QR small enough to scan and to carry the channel logo
+        svg = payment_qr_svg(value, 'alipay')
+        self.assertLess(int(svg.split('viewBox="0 0 ')[1].split(' ')[0]), 70)
+        self.assertIn('style="color:#075fbd"', svg)
+        phone = self.app.test_client().get('/m/' + token)
+        self.assertEqual((phone.status_code, phone.headers['Location']), (302, order['pay_url']))
+        self.assertEqual(phone.headers['Cache-Control'], 'no-store')
+        self.assertEqual(self.app.test_client().get('/m/AAAAAAAAAAAA').status_code, 404)
+        self.assertEqual(self.app.test_client().get('/m/short').status_code, 404)
+        page = self.create(out_trade_no='TEST_ORDER_0002', product='page').json['order']
+        self.assertEqual(self.app.test_client().get('/m/' + self.store.short_link(page['out_trade_no'])).status_code, 404)
+        with self.store.connect() as db: db.execute("UPDATE orders SET pay_url='https://evil.example/gateway.do' WHERE out_trade_no=?", (number,))
+        self.assertEqual(self.app.test_client().get('/m/' + token).status_code, 404)
+        with self.store.connect() as db: db.execute("UPDATE orders SET pay_url=?,expires_at=1 WHERE out_trade_no=?", (order['pay_url'], number))
+        self.assertEqual(self.app.test_client().get('/m/' + token).status_code, 410)
+
+    def test_mobile_checkout_short_link_ignores_untrusted_host_headers(self):
+        number = self.create(product='wap').json['order']['out_trade_no']
+        attacker = self.app.test_client()
+        attacker.set_cookie('__Host-bypay_session', self.client.get_cookie('__Host-bypay_session').value, domain='attacker.example')
+        with patch('web.qrcode.payment_qr_svg', return_value='<svg/>') as encode:
+            self.assertEqual(attacker.get(f'/api/v1/payments/{number}/qr.svg', base_url='https://attacker.example').status_code, 200)
+        self.assertTrue(encode.call_args.args[0].startswith('https://pay.example.test/m/'))
+
     def test_receipt_encoder_does_not_embed_untrusted_text_or_remote_resources(self):
         svg = payment_qr_svg('https://qr.alipay.com/test?text=<script>alert(1)</script>')
         self.assertNotIn('<script', svg)
