@@ -29,6 +29,7 @@ class MerchantFixture:
         self.app=create_app(self.settings);self.client=self.app.test_client();self.config=self.app.extensions['configuration']
         self.headers={'Origin':'http://127.0.0.1:8100','X-Demo-Request':'1'}
         self.requests=[];self.paid=False;self.wrong_amount=False;self.bad_response=False
+        self.created={};self.create_error=None;self.query_type=None  # what Pay was asked for; a refusal to answer create with; a type to answer queries with
         real_client=httpx.Client
         def handle(request):
             self.requests.append(request)
@@ -37,23 +38,29 @@ class MerchantFixture:
             valid=str(params.get('pid'))=='1000' and (verify(params,self.merchant.public_key(),'RSA',timestamp=True) if version=='v2' else params.get('key')==self.accepted_md5 or verify(params,self.accepted_md5))
             if not valid: result={'code':-3,'error':'invalid_signature','msg':'签名校验失败'}
             elif request.url.path in {'/api/merchant/info','/api.php'} and params.get('act','query')=='query':result={'code':0 if version=='v2' else 1,'pid':1000,'status':1}
+            elif request.url.path in {'/mapi.php','/api/pay/create'} and self.create_error is not None:
+                result={'code':-1,'error':self.create_error,'msg':'refused'}
             elif request.url.path in {'/mapi.php','/api/pay/create'}:
-                result={'code':0 if version=='v2' else 1,'trade_no':'2026101600000012345'}
+                # every order gets its own platform number, and Pay remembers which payment type it was asked for
+                trade=f'20261016{len(self.created)+1:011d}'
+                self.created[params['out_trade_no']]={'trade_no':trade,'type':params.get('type')}
+                result={'code':0 if version=='v2' else 1,'trade_no':trade}
                 result.update({'pay_type':'jump','pay_info':'https://pay.bingyun.vip/cashier/'+'a'*43} if version=='v2' else {'payurl':'https://pay.bingyun.vip/cashier/'+'a'*43})
             else:
-                result={'code':0 if version=='v2' else 1,'pid':1000,'trade_no':'2026101600000012345','out_trade_no':params['out_trade_no'],'type':'alipay','money':'0.02' if self.wrong_amount else '0.01','status':1 if self.paid else 0}
+                known=self.created.get(params['out_trade_no'],{'trade_no':'2026101600000012345','type':'alipay'})
+                result={'code':0 if version=='v2' else 1,'pid':1000,'trade_no':known['trade_no'],'out_trade_no':params['out_trade_no'],'type':self.query_type or known['type'],'money':'0.02' if self.wrong_amount else '0.01','status':1 if self.paid else 0}
             if version=='v2':result=signed(result,self.platform,'RSA');result['sign']='invalid' if self.bad_response else result['sign']
             return httpx.Response(200,json=result)
         transport=httpx.MockTransport(handle);mock=patch('pay_http.httpx.Client',side_effect=lambda **kw:real_client(transport=transport,**kw));mock.start();self.addCleanup(mock.stop)
 
     def post(self,path,payload,**kwargs):return self.client.post(path,json=payload,headers=self.headers,base_url='http://127.0.0.1:8100',**kwargs)
 
-    def create(self,version='v1'):
+    def create(self,version='v1',pay_type=None):
         if version=='v2':self.assertEqual(self.post('/api/config',{'api_version':'v2'}).status_code,200)
-        response=self.post('/api/orders',{'amount':'0.01'})
+        response=self.post('/api/orders',{'amount':'0.01',**({'type':pay_type} if pay_type else {})})
         self.assertEqual(response.status_code,201,response.json)
         return response.json['order']
 
     def callback(self,order,**changes):
-        fields={'pid':'1000','trade_no':order['platform_no'],'out_trade_no':order['number'],'type':'alipay','name':'独立商户支付测试','money':'0.01','trade_status':'TRADE_SUCCESS',**changes}
+        fields={'pid':'1000','trade_no':order['platform_no'],'out_trade_no':order['number'],'type':order.get('pay_type','alipay'),'name':'独立商户支付测试','money':'0.01','trade_status':'TRADE_SUCCESS',**changes}
         return signed(fields,self.platform if order['api_version']=='v2' else self.md5,'RSA' if order['api_version']=='v2' else 'MD5')

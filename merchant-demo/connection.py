@@ -8,6 +8,12 @@ from epay_protocol import private_key, public_key, public_pem, signed, verify
 from pay_http import request_json
 
 
+# Epay payment types the demo can ask Pay for: the Epay name, not Pay's internal channel name
+TYPES=('alipay','wxpay')
+# Answers from Pay that the page can explain; anything else is shown as a plain refusal
+PAY_ERRORS={'invalid_signature','merchant_unavailable','rsa_required','order_not_found','invalid_merchant_callback','payment_not_configured','channel_disabled','order_conflict','channel_not_integrated','payment_provider_error','payment_creation_pending'}
+
+
 class ConnectionError(ValueError):
     def __init__(self, code): super().__init__(code); self.code=code
 
@@ -45,7 +51,8 @@ def call(config,action,parameters=None):
     if version=='v2' and not verify(response,config['PAY_PLATFORM_PUBLIC_KEY'],'RSA',timestamp=True): raise ConnectionError('platform_signature_invalid')
     if response.get('code')!=(0 if version=='v2' else 1):
         error=response.get('error')
-        raise ConnectionError(error if error in {'invalid_signature','merchant_unavailable','rsa_required','order_not_found','invalid_merchant_callback','payment_not_configured','channel_disabled','order_conflict','channel_not_integrated'} else 'epay_request_failed')
+        known=isinstance(error,str) and (error in PAY_ERRORS or re.fullmatch(r'wechat_[a-z0-9_]{2,56}',error) is not None)
+        raise ConnectionError(error if known else 'epay_request_failed')
     return response
 
 
@@ -56,8 +63,9 @@ def check(config):
     return response
 
 
-def create(config,number,amount,subject,client_ip='127.0.0.1'):
-    response=call(config,'create',{'out_trade_no':number,'money':amount,'name':subject,'type':'alipay',
+def create(config,number,amount,subject,client_ip='127.0.0.1',pay_type='alipay'):
+    if pay_type not in TYPES: raise ConnectionError('invalid_pay_type')
+    response=call(config,'create',{'out_trade_no':number,'money':amount,'name':subject,'type':pay_type,
                                   'notify_url':config['DEMO_ORIGIN']+'/notify','return_url':config['DEMO_ORIGIN']+'/return',
                                   'clientip':client_ip,'device':'pc'})
     url=response.get('pay_info') if config['PAY_API_VERSION']=='v2' else response.get('payurl')
@@ -76,5 +84,5 @@ def verify_notification(config,params):
     algorithm='RSA' if version=='v2' else 'MD5'
     key=config['PAY_PLATFORM_PUBLIC_KEY'] if version=='v2' else config['PAY_MD5_KEY']
     if params.get('sign_type','MD5')!=algorithm or not verify(params,key,algorithm,timestamp=version=='v2'): raise ConnectionError('invalid_notification_signature')
-    if str(params.get('pid'))!=pid or params.get('trade_status')!='TRADE_SUCCESS' or params.get('type')!='alipay': raise ConnectionError('invalid_notification_fields')
+    if str(params.get('pid'))!=pid or params.get('trade_status')!='TRADE_SUCCESS' or params.get('type') not in TYPES: raise ConnectionError('invalid_notification_fields')
     return params

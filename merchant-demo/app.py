@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 from flask import Flask, jsonify, request, send_from_directory
 
 from configuration import Configuration, ConfigurationError, local_hosts
-from connection import ConnectionError, call, create, verify_notification
+from connection import TYPES, ConnectionError, call, create, verify_notification
 
 ROOT=Path(__file__).resolve().parent
 load_dotenv(ROOT/'.env')
@@ -56,7 +56,7 @@ def create_app(settings=None):
           CREATE TABLE IF NOT EXISTS receipts(id TEXT PRIMARY KEY,body_hash TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS logs(id INTEGER PRIMARY KEY,time INTEGER NOT NULL,stage TEXT NOT NULL,number TEXT,detail TEXT NOT NULL);''')
         columns={r[1] for r in connection.execute('PRAGMA table_info(orders)')}
-        for name,definition in {'public_key_pem':"TEXT NOT NULL DEFAULT ''",'platform_no':"TEXT NOT NULL DEFAULT ''",'api_version':"TEXT NOT NULL DEFAULT 'legacy'",'merchant_id':"TEXT NOT NULL DEFAULT ''",'connection_enc':"TEXT NOT NULL DEFAULT ''",'last_query_at':'INTEGER NOT NULL DEFAULT 0','confirmed_by':"TEXT NOT NULL DEFAULT ''"}.items():
+        for name,definition in {'public_key_pem':"TEXT NOT NULL DEFAULT ''",'platform_no':"TEXT NOT NULL DEFAULT ''",'api_version':"TEXT NOT NULL DEFAULT 'legacy'",'merchant_id':"TEXT NOT NULL DEFAULT ''",'connection_enc':"TEXT NOT NULL DEFAULT ''",'last_query_at':'INTEGER NOT NULL DEFAULT 0','confirmed_by':"TEXT NOT NULL DEFAULT ''",'pay_type':"TEXT NOT NULL DEFAULT 'alipay'"}.items():
             if name not in columns:connection.execute(f'ALTER TABLE orders ADD COLUMN {name} {definition}')
     database.chmod(0o600)
 
@@ -86,7 +86,7 @@ def create_app(settings=None):
         return dict(row) if row else None
 
     def public(row):
-        return {k:row[k] for k in ('number','amount','status','pay_url','created_at','paid_at','platform_no','api_version','merchant_id','confirmed_by')}
+        return {k:row[k] for k in ('number','amount','status','pay_url','created_at','paid_at','platform_no','api_version','merchant_id','confirmed_by','pay_type')}
 
     @app.before_request
     def browser_guard():
@@ -150,6 +150,8 @@ def create_app(settings=None):
         amount=payload.get('amount','')
         if not isinstance(amount,str) or not re.fullmatch(r'\d{1,2}(?:\.\d{1,2})?',amount) or not Decimal('0')<Decimal(amount)<=Decimal('10'):
             return jsonify(error='amount_between_001_and_10'),400
+        pay_type=payload.get('type','alipay')  # an older page that sends no type still pays with Alipay
+        if not isinstance(pay_type,str) or pay_type not in TYPES:return jsonify(error='invalid_pay_type'),400
         settings=config.read();amount=format(Decimal(amount),'.2f')
         number='DEMO_'+str(int(time.time()))+'_'+secrets.token_hex(6)
         try:
@@ -157,10 +159,10 @@ def create_app(settings=None):
             credentials(settings)
         except ConnectionError as exc:return jsonify(error=exc.code),400
         with db() as connection:
-            connection.execute("INSERT INTO orders(number,amount,status,created_at,api_version,merchant_id,connection_enc) VALUES (?,?,'CREATING',?,?,?,?)",(number,amount,int(time.time()),settings['PAY_API_VERSION'],settings['PAY_MERCHANT_ID'],config.seal(settings)))
-        log('create.request',number,{'merchant_id':settings['PAY_MERCHANT_ID'],'api_version':settings['PAY_API_VERSION'],'amount':amount,'notify_url':settings['DEMO_ORIGIN']+'/notify'})
+            connection.execute("INSERT INTO orders(number,amount,status,created_at,api_version,merchant_id,connection_enc,pay_type) VALUES (?,?,'CREATING',?,?,?,?,?)",(number,amount,int(time.time()),settings['PAY_API_VERSION'],settings['PAY_MERCHANT_ID'],config.seal(settings),pay_type))
+        log('create.request',number,{'merchant_id':settings['PAY_MERCHANT_ID'],'api_version':settings['PAY_API_VERSION'],'type':pay_type,'amount':amount,'notify_url':settings['DEMO_ORIGIN']+'/notify'})
         try:
-            result=create(settings,number,amount,'独立商户支付测试',request.remote_addr or '127.0.0.1')
+            result=create(settings,number,amount,'独立商户支付测试',request.remote_addr or '127.0.0.1',pay_type)
             with db() as connection:
                 row=connection.execute('SELECT platform_no FROM orders WHERE number=?',(number,)).fetchone()
                 if row['platform_no'] and row['platform_no']!=result['trade_no']:raise ConnectionError('invalid_checkout_response')
@@ -170,14 +172,15 @@ def create_app(settings=None):
             if exc.code in {'invalid_signature','merchant_unavailable','rsa_required'}:config.mark_key(settings,'invalid')
             log('create.failed',number,{'error':exc.code})
             return jsonify(error=exc.code),502
-        log('create.accepted',number,{'platform_no':result['trade_no'],'amount':amount,'cashier_origin':settings['PAY_ORIGIN']})
+        log('create.accepted',number,{'platform_no':result['trade_no'],'type':pay_type,'amount':amount,'cashier_origin':settings['PAY_ORIGIN']})
         return jsonify(order=public(order(number))),201
 
     def confirm(row,params,source):
         number=row['number'];trade=str(params.get('trade_no',''))
-        if not re.fullmatch(r'[A-Za-z0-9_-]{6,64}',trade) or params.get('out_trade_no')!=number or str(params.get('pid'))!=row['merchant_id'] or params.get('type')!='alipay' or Decimal(str(params.get('money','')))!=Decimal(row['amount']):raise ValueError('order_mismatch')
+        # the payment type must be the one this order was created with: an Alipay notice never settles a WeChat order, nor the other way round
+        if not re.fullmatch(r'[A-Za-z0-9_-]{6,64}',trade) or params.get('out_trade_no')!=number or str(params.get('pid'))!=row['merchant_id'] or params.get('type')!=row['pay_type'] or Decimal(str(params.get('money','')))!=Decimal(row['amount']):raise ValueError('order_mismatch')
         if row['platform_no'] and row['platform_no']!=trade:raise ValueError('platform_order_mismatch')
-        canonical=json.dumps({'pid':row['merchant_id'],'trade_no':trade,'out_trade_no':number,'money':row['amount'],'type':'alipay'},sort_keys=True)
+        canonical=json.dumps({'pid':row['merchant_id'],'trade_no':trade,'out_trade_no':number,'money':row['amount'],'type':row['pay_type']},sort_keys=True)
         receipt='epay:'+row['merchant_id']+':'+trade
         digest=hashlib.sha256(canonical.encode()).hexdigest()
         with db() as connection:

@@ -41,3 +41,10 @@ SMTP / Turnstile 真实验收需用户配置的外部凭据；没有自动出款
 - 日志里出现的每个事件代码都要有中文说明；新增 trace 阶段必须加入 web/console.py 的 EVENT_CATEGORIES 和 format.js（有测试保证）
 - 修改这三页后运行 tools/smoke_platform.py；共用样式在 console/admin.css，旧的 settings-* / log-* 样式已删除，不要重新引入
 
+
+商户测试站支付方式与域名验证文件（根因和验收见 ByPay_项目规划.md 第 12 节）
+- 测试站（merchant-demo）可选支付宝或微信支付，选择随订单保存，回调和查询返回的 type 必须与下单时一致，不一致不确认到账；微信要求 Pay 的站点地址是公网 https，本机 http 会明确返回 wechat_https_required，不要为了本机能测而放宽
+- 修改测试站后：测试站自带测试、tests/test_merchant_demo.py（测试站对真实 Pay 应用，含微信）、tools/smoke_epay.py，再 `python3 tools/package_merchant_demo.py` 重新打包并 `--check`；ZIP 里没有环境文件、密钥、数据库、日志
+- 微信 JS 安全域名等平台的验证文件（MP_verify_xxx.txt）放进仓库根目录的 verification/，从站点根路径原样提供：文件名限定为字母数字下划线连字符加 .txt，最大 1 KB，不跟随符号链接，不用重新构建；不要把别的文件放进该目录
+- ByPay.sh 菜单 5 更新代码（deploy/update.sh）：只允许 fast-forward；先备份数据库、密钥和配置（web.management backup，保留最近 3 份 update-*），再合并和部署，部署失败自动回到更新前的代码和网页文件并重启旧版本（reset 被拒绝时强制回退，代码回退失败也要把服务启动起来）；本机改动的程序文件需用户确认后另存为补丁，不会被静默覆盖；确认之后 Ctrl+C 被忽略、终端断开也走到头，输出经 tee 写入 data/update.log；update.sh 不依赖 set -e，部署放在子进程 bash 里执行，改动后运行 tests/test_update_script.py（含伪终端挂断测试）并对新增保护做变异检查
+- 不要在本机直接执行真实 deploy() 或菜单 5：它们会以 root 覆盖 /etc/systemd/system/bypay.service；本机部署用备份 → 构建 → systemctl restart bypay

@@ -4,6 +4,7 @@ import getpass
 import json
 import os
 import re
+import shutil
 import signal
 import socket
 import sqlite3
@@ -126,8 +127,11 @@ def direct_origins(origin, port):
     return ",".join(sorted(set(browser_origins(local_hosts(), {port})) | {origin}))
 
 
+def systemd_running(): return Path("/run/systemd/system").exists()
+
+
 def unit_workdir(unit):
-    if not Path("/run/systemd/system").exists(): return ""
+    if not systemd_running(): return ""
     try:
         return subprocess.run(["systemctl", "show", unit, "--property=WorkingDirectory", "--value"], capture_output=True, text=True, timeout=5).stdout.strip()
     except (OSError, subprocess.TimeoutExpired): return ""
@@ -259,6 +263,44 @@ def change_credentials():
     print("账号信息已更新，请重新登录网页")
 
 
+UPDATE_BACKUPS_KEPT = 3
+
+
+def update_ready():
+    """A code update restarts the system service made by this project, so it needs a deployment that has one."""
+    if not manifest_path().exists(): raise ValueError("尚未部署，请先选择 1")
+    if not systemd_running(): raise ValueError("代码更新需要 systemd 系统服务，当前环境未运行 systemd")
+    if unit_workdir(SERVICE) != str(ROOT): raise ValueError("尚未创建 bypay 系统服务，请先选择 1 完成部署")
+
+
+def backup():
+    """Snapshot the data before an update: a consistent copy of the database, the keys and the settings file. Only the newest few are kept."""
+    os.umask(0o077)
+    state, source, values = configuration()
+    database = Path(values["DATABASE"])
+    if not database.is_file():
+        print("尚无数据库，不需要备份"); return
+    data = database.parent
+    folder = data / "backups" / ("update-" + time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()))
+    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with closing(sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True, timeout=30)) as live, closing(sqlite3.connect(folder / "web.sqlite3")) as copy:
+        live.backup(copy)  # online and consistent, whatever the service is doing meanwhile
+        if copy.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+            raise ValueError("备份文件校验未通过，原数据未受影响")
+        try: counts = [copy.execute(sql).fetchone()[0] for sql in ("SELECT COUNT(*) FROM users", "SELECT COUNT(*) FROM orders", "SELECT COUNT(*) FROM orders WHERE paid_at IS NOT NULL")]
+        except sqlite3.OperationalError: counts = None
+    for item in sorted(data.iterdir()):
+        if item.is_file() and not item.is_symlink() and item.suffix in {".key", ".pem"}: shutil.copy2(item, folder / item.name)
+    if source.is_file(): shutil.copy2(source, folder / source.name.lstrip("."))
+    if manifest_path().is_file(): shutil.copy2(manifest_path(), folder / "launcher.json")
+    for item in folder.iterdir(): item.chmod(0o600)
+    # older update backups go; folders made by hand under backups/ are never touched
+    made = sorted(item for item in (data / "backups").iterdir() if item.is_dir() and re.fullmatch(r"update-\d{8}T\d{6}Z", item.name))
+    for old in made[:-UPDATE_BACKUPS_KEPT]: shutil.rmtree(old)
+    print(f"数据已备份到：{folder}")
+    if counts: print(f"备份内容：{counts[0]} 个用户、{counts[1]} 笔订单（其中 {counts[2]} 笔已支付），以及密钥和配置文件")
+
+
 def logs():
     _, _, values = configuration()
     paths = [Path(values["DATABASE"]).parent / "logs/server.log", Path(values["BYPAY_LOG_FILE"])]
@@ -289,17 +331,17 @@ def foreground():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=("prepare","unit","status","credentials","logs","foreground","stop","wait"))
+    parser.add_argument("action", choices=("prepare","unit","status","credentials","logs","foreground","stop","wait","backup","ready"))
     parser.add_argument("--credentials", action="store_true")
     args = parser.parse_args()
     try:
         if args.action == "unit": print(unit_text(), end="")
         elif args.action == "status": status(args.credentials)
-        else: {"prepare":prepare,"credentials":change_credentials,"logs":logs,"foreground":foreground,"stop":stop,"wait":wait_ready}[args.action]()
+        else: {"prepare":prepare,"credentials":change_credentials,"logs":logs,"foreground":foreground,"stop":stop,"wait":wait_ready,"backup":backup,"ready":update_ready}[args.action]()
     except (ValueError, OSError, subprocess.SubprocessError) as exc:
         print("操作未完成：" + str(exc), file=sys.stderr); raise SystemExit(1)
-    except (KeyboardInterrupt, EOFError):
-        print("\n操作已取消")
+    except (KeyboardInterrupt, EOFError) as exc:
+        print("\n操作已取消"); raise SystemExit(130 if isinstance(exc, KeyboardInterrupt) else 1)  # a cancelled step is never reported as done
 
 
 if __name__ == "__main__": main()

@@ -28,6 +28,7 @@ secrets/
 .coverage
 node_modules/
 dist/
+frontend/dist.update-backup/
 artifacts/
 test-results/
 playwright-report/

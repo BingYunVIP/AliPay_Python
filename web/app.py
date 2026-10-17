@@ -31,6 +31,8 @@ from .settings import SiteSettings, SettingsError
 from .refunds import Refunds, RefundError
 
 ROOT = Path(__file__).resolve().parent.parent
+# Domain-ownership files (WeChat MP_verify_xxx.txt and the like) are served from the site root out of one folder, by exact name
+VERIFICATION_FILE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{5,79}\.txt")
 EMPTY_PASSWORD_HASH = generate_password_hash("unavailable-account-placeholder")
 
 
@@ -72,7 +74,8 @@ def create_app(settings=None):
     app = Flask(__name__, static_folder=None)
     app.config.update(PUBLIC_BASE_URL="https://pay.bingyun.vip", DATABASE=str(ROOT / "data/web.sqlite3"),
                       ALLOW_REGISTRATION="true", TEST_MAX_AMOUNT="3000.00", MAX_CONTENT_LENGTH=32768,
-                      MAX_FORM_MEMORY_SIZE=32768, MAX_FORM_PARTS=64, FRONTEND_DIST=str(ROOT / "frontend/dist"))
+                      MAX_FORM_MEMORY_SIZE=32768, MAX_FORM_PARTS=64, FRONTEND_DIST=str(ROOT / "frontend/dist"),
+                      VERIFICATION_DIR=str(ROOT / "verification"))
     app.config.update({k: v for k, v in os.environ.items() if k.startswith(("ALIPAY_", "BYPAY_")) or k in {"PUBLIC_BASE_URL", "ALLOW_REGISTRATION", "TEST_MAX_AMOUNT", "DATABASE"}})
     app.config.update(settings or {})
     cfg = payment_config(app.config)
@@ -885,6 +888,11 @@ def create_app(settings=None):
         candidate = (dist / path).resolve()
         if path and candidate.is_relative_to(dist) and candidate.is_file():
             return send_from_directory(dist, path)
+        if VERIFICATION_FILE.fullmatch(path):
+            folder = Path(app.config["VERIFICATION_DIR"]).resolve()
+            target = folder / path
+            if target.is_file() and not target.is_symlink() and target.stat().st_size <= 1024:
+                return send_from_directory(folder, path, mimetype="text/plain")
         if path.startswith("cashier/"):
             value = merchants.cashier(path.removeprefix("cashier/"))
             if not value: raise ApiError("cashier_not_found",404)

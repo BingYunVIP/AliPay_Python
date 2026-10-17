@@ -227,3 +227,52 @@ VPS 更新前需确认 Nginx 把 /m/ 转发到 Pay、系统管理里的站点地
 3. 测试支付 → 微信支付 → 网页支付，用手机微信扫码支付 0.01 元，确认订单自动变为已支付；退款是否测试由你决定
 4. VPS：Nginx 把 /wechat/ 和 /m/ 转发到 Pay；VPS 更新提示词见 ByPay_项目规划.md 第 8 节
 
+
+
+## 2026-10-17 · 商户测试站选择支付方式、域名验证文件、ByPay.sh 更新代码
+
+### 问题与根因
+
+- 微信 JS 安全域名需要在域名根路径放 MP_verify_xxx.txt；主站是单页应用，对未登记的路径一律 404，没有地方放静态验证文件
+- 测试支付微信提示“微信支付要求公网 HTTPS 站点地址”：这是微信的规则（通知地址必须是公网 https），本机 http://localhost:888 不满足，不是缺陷；真正的缺口是独立测试站只会创建支付宝订单，无法在 VPS 上通过商户接口验收微信
+- 更新 VPS 靠手工 git 和部署命令，没有备份，部署失败时服务可能停在半更新状态，对新手不安全
+
+### 参考实现
+
+- Epay 的 type 取值：支付宝 `alipay`、微信 `wxpay`，Pay 内部渠道名是 `wechat`；通知给商户的 type 与下单时一致
+- 微信域名验证文件规则：文件名 MP_verify_ 加令牌，内容就是令牌本身
+- 更新脚本沿用 ByPay.sh 现有的部署流程，不另起一套：fast-forward only、先备份、失败回退
+
+### 修改
+
+- web/app.py：`verification/` 目录里的纯文本验证文件从站点根路径原样提供（名称正则、1 KB 上限、不跟随符号链接、路径穿越 404）；新增 verification/MP_verify_YIZThTeg958vnQzp.txt（与用户给的文件逐字节一致，16 字节）
+- 测试站（merchant-demo）：页面增加“支付方式”单选（支付宝默认、微信支付）；下单带 type 并随订单保存；回调和查询的 type 必须与订单一致；未知类型 400；微信相关错误码（需要 https、AppID 不匹配、未授权等）显示为明确文字；旧订单迁移为支付宝；样式不使用内联 style（测试站 CSP 禁止）
+- Pay_Callback_Demo.zip 与 .sha256 重新打包（76 个文件，只收录源码；与上一版相比只有 7 个文件不同：app.py、connection.py、static/app.js、static/index.html、static/style.css、tests/fixtures.py、tests/test_demo.py）
+- web/management.py：新增 `backup`（SQLite 在线备份、密钥、配置到 data/backups/update-<UTC>/，权限 600，保留最近 3 份，只清理自己创建的文件夹，路径用 URI 转义）和 `ready`（要求已部署、systemd 运行、bypay 服务属于本目录）；被 Ctrl+C 取消返回 130、输入被关闭返回 1，不再把取消当成成功
+- deploy/update.sh（新）与 ByPay.sh：菜单“5）更新代码”；deploy() 拆出 install_service，更新模式下不再询问且不打印管理员密码；部署在子进程 bash 里执行以保证出错即停；确认之后 Ctrl+C 被忽略，终端断开时更新继续并把输出写入 data/update.log；回滚在 reset --keep 被拒绝时强制回退，代码无法回退时仍重新启动服务；菜单改为 main()，直接运行才打开菜单，被 source 时只定义函数；“系统状态”显示代码版本；.gitignore 增加 frontend/dist.update-backup/
+- tools/smoke_epay.py：增加支付方式选项几何、http 下微信被拒、https 的 V1/V2 微信完整流程（用 pay.example.test / demo.example.test 虚拟域名、请求路由和进程内微信网关）
+
+### 测试与本机验证
+
+- 主站 268 项、测试站 31 项通过；新增 tests/test_verification.py（5）、tests/test_merchant_demo.py（3，测试站对真实 Pay 应用，支付宝/微信 × V1/V2，回调和查询两条确认路径）、tests/test_update_script.py（34，含真实伪终端挂断）、tests/test_management.py 的备份、就绪检查、URI 路径和退出码（7）
+- 对更新脚本的 22 处保护做了变异检查（子进程部署、HUP 与 INT 忽略、网页文件恢复、备份、补丁保存与还原、两把锁、分叉检查、控制字符过滤、旧版本重新部署、tee 日志管道、reset --hard 回退、失败后仍重启服务、后台进程占锁、日志轮转等），去掉任何一处对应测试都失败；`--ff-only` 是第二道保护（分叉在合并前已被单独拒绝），去掉它不会改变任何测试结果，所以只当作纵深防御，不宣称有测试覆盖
+- 另一个代理独立评审了更新脚本、备份和验证文件路由：没有会丢数据或损坏数据库的问题；提出 5 项（回滚时 reset 被拒绝则服务保持停止；断线后往已断开的终端写字使部署失败并回滚；路径含 # 或 ? 时备份得到空库；Ctrl+C 取消被当成成功；测试缺口）均已修复并有测试；“确认之后不能用 Ctrl+C 中止”是有意的取舍（半途中断会让服务停在半更新状态）
+- 四套真实浏览器冒烟通过：smoke_ui 41、smoke_platform 62、smoke_epay 7、smoke_wechat 29；测试站页面截图检查：支付方式两个选项并排等宽，选中态、键盘焦点、手机宽度正常；https 下嵌入的微信收银台显示绿色微信二维码；http 下微信订单显示“需要 https”的说明且订单为创建失败
+- shellcheck（临时安装，已删除）对 ByPay.sh、deploy/update.sh 无告警
+- 没有联系微信支付：没有真实付款、退款，没有点击“检查配置”；没有在本机运行真实 deploy() 或菜单 5（会以 root 覆盖 /etc/systemd/system/bypay.service）；在临时克隆上用真实检查函数验证了菜单 5 对“未部署”“没有本项目的系统服务”的拒绝
+
+### 本机部署与清理
+
+- 部署前用新的 backup 命令备份真实库：data/local/backups/update-20261017T052146Z（integrity_check ok，2 个用户、14 笔订单、6 笔已付，含密钥、配置和 launcher.json，权限 600），备份与线上库的用户/订单/渠道配置摘要逐项一致
+- 构建 frontend/dist 并 systemctl restart bypay；重启后：用户与订单摘要、已付数、渠道配置版本与部署前完全一致，integrity_check ok；管理员登录后概览、渠道、诊断、事件接口均 200，journalctl 没有警告；http://127.0.0.1:888/MP_verify_YIZThTeg958vnQzp.txt 返回 200、16 字节、text/plain，内容与仓库文件逐字节一致，HEAD 200，其余路径（/login、/api/capabilities、/robots.txt、目录穿越、非验证文件）行为不变
+- 本机 /root/ByPay/Test/Pay_Callback_Demo 与新 ZIP 同步（只覆盖上述 7 个源码文件，没有碰 .env、data/、secrets/、.venv），并在该文件夹里用它自己的 .venv 跑通 31 项测试
+- 清理：6 个 __pycache__ 目录（1349128 字节，记录在 data/maintenance/cleanup-20261017T052725Z.json）；删除早于最近两代的备份 pre-ui-20261017T013318（887053 字节，记录在 data/maintenance/backup-cleanup-20261017T132749.json），保留 pre-wechat-admin-20261017T050855 和本次 update-20261017T052146Z；demo 文件夹里的两个 __pycache__；/tmp 下的构建目录、冒烟产物、截图、变异测试和部署核对脚本；data/logs 与 data/local/logs 没有手工修剪
+
+### 发布与剩余验收
+
+已提交并推送到 origin/main（提交号以 git log 为准）；VPS 尚未更新；真实付款与退款未执行；本轮之前本地的两个提交（UI 重做、微信支付与管理页面重构）随这次一起推送
+VPS 更新提示词见 ByPay_项目规划.md 第 8 节；第一次更新要手动 git fetch / merge --ff-only 再选菜单 1，之后才可以用菜单 5
+你需要做的验收：
+1. VPS 更新完成后，在微信公众平台绑定 JS 安全域名 pay.bingyun.vip：先在浏览器打开 https://pay.bingyun.vip/MP_verify_YIZThTeg958vnQzp.txt 应看到 YIZThTeg958vnQzp；当前的扫码、H5 支付本身不需要这个域名
+2. 线上控制台：系统管理 → 站点与订单 → 域名与通知的站点地址是 https://pay.bingyun.vip；收款渠道 → 微信支付 → 配置渠道填写 7 项参数（本机数据库不会同步到 VPS），再点“检查配置”（会真实联系微信）
+3. 打开 https://test.bingyun.vip，选择“微信支付”，下单并用手机微信扫码支付 0.01 元，确认测试站订单变为支付成功；退款是否测试由你决定
