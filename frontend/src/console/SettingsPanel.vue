@@ -21,7 +21,7 @@ const section = computed({
 })
 </script>
 <template>
-  <div class="console-page-heading"><div><h2>{{ t('系统管理', 'System settings') }}</h2><p>{{ t('站点、商户规则、邮件、人机验证与后台任务', 'Site, merchant rules, email, human check and background tasks') }}</p></div></div>
+  <div class="console-page-heading"><div><h2>{{ t('系统管理', 'System settings') }}</h2><p>{{ t('站点、商户规则、邮件、人机验证与后台任务', 'Site, merchant rules, email, human check and background tasks') }}</p></div><div id="settings-heading-actions" class="heading-actions"></div></div>
   <PageTabs v-model="section" :items="items" :label="t('系统设置分类', 'Settings sections')" />
   <div :id="`panel-${section}`" role="tabpanel" :aria-labelledby="`tab-${section}`">
     <KeepAlive><component :is="sections[section]" /></KeepAlive>

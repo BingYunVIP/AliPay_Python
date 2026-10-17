@@ -71,6 +71,10 @@ def run():
             'ALLOW_REGISTRATION': 'true', 'ALIPAY_ENV': 'sandbox', 'ALIPAY_APP_ID': '2026000000000000', 'ALIPAY_SELLER_ID': '2088000000000000', 'BYPAY_TRUST_PROXY': '0',
             'FRONTEND_DIST': os.environ.get('BYPAY_SMOKE_DIST', str(ROOT / 'frontend/dist')),
             'ALIPAY_PRIVATE_KEY': key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()).decode(), 'ALIPAY_PUBLIC_KEY': public_pem(key)})
+        # 冒烟只验收界面与流程：商户准入和退款服务费按测试基线打开（真实默认值见 tests/support.py）
+        app.extensions['operations'].rules.save({'registration_review': False, 'registration_paid': False, 'deposit_enabled': False,
+                                                 'risk_enabled': False, 'domain_add': True, 'domain_enforce': False,
+                                                 'refund_fee_payer': 'platform', 'version': app.extensions['operations'].rules.read()['version']})
         store = app.extensions['store']
         merchant = store.register('merchant@example.test', 'Merchant-password-123')
         app.extensions['merchants'].ensure(merchant['id']); app.extensions['operations'].ensure(merchant['id'])
@@ -177,10 +181,11 @@ def run():
                 centres = [c.bounding_box()['y'] + c.bounding_box()['height'] / 2 for c in controls]; lefts = [c.bounding_box()['x'] for c in controls]
                 check('filter row: 全选 不选 已选 0 笔 search 删除选中 导出选择 CSV on one row', max(centres) - min(centres) <= 6 and lefts == sorted(lefts) and filter_row.locator('.selected-count').inner_text() == '已选 0 笔')
                 check('removed: refresh icon, export-filtered button, selection toolbar', page.get_by_label('刷新订单').count() + page.get_by_role('button', name='导出筛选结果').count() + page.locator('.order-selection-toolbar, .order-row-actions').count() == 0)
-                check('table headers', page.locator('.orders-table thead th').all_inner_texts()[1:] == ['商户 ID / 邮箱', '商品 / 订单号', '渠道 / 产品', '实付金额', '手续费', '交易状态', '创建时间', '支付时间', '操作'])
+                check('table headers', page.locator('.orders-table thead th').all_inner_texts()[1:] == ['商户 ID / 邮箱', '商品 / 订单号', '渠道 / 产品', '实付金额', '手续费', '交易状态', '创建时间', '支付时间', '用户IP', '操作'])
                 first = page.locator('.orders-table tbody tr').first
                 check('channel cell shows logo + configuration name; product alone below', first.locator('.table-channel').inner_text().strip() == '支付宝' and '·' not in first.locator('td').nth(3).inner_text())
                 check('merchant column and fee column are filled', first.locator('td').nth(1).locator('code').inner_text().strip() != '' and first.locator('td').nth(4).inner_text().startswith('¥'))
+                check('the client IP column shows the real address', first.locator('td').nth(9).inner_text().strip() not in ('', '—'))
                 with store.connect() as db: total = db.execute('SELECT COUNT(*) FROM orders WHERE deleted_at IS NULL').fetchone()[0]
                 filter_row.get_by_role('button', name='全选', exact=True).click(); expect(filter_row.locator('.selected-count')).to_have_text(f'已选 {total} 笔', timeout=6000)
                 filter_row.locator('input').fill('批量订单 1'); page.wait_for_timeout(900); during = filter_row.locator('.selected-count').inner_text()

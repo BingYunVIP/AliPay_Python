@@ -52,6 +52,10 @@ def run():
                           'ALLOW_REGISTRATION': 'true', 'BYPAY_TRUST_PROXY': '0', 'BYPAY_CALLBACK_HOSTS': 'merchant.example',
                           'FRONTEND_DIST': os.environ.get('BYPAY_SMOKE_DIST', str(ROOT / 'frontend/dist')),
                           'WECHAT_CLIENT_FACTORY': lambda cfg: WechatClient(cfg, transport=fake.transport)})
+        # 冒烟只验收界面与流程：商户准入和退款服务费按测试基线打开（真实默认值见 tests/support.py）
+        app.extensions['operations'].rules.save({'registration_review': False, 'registration_paid': False, 'deposit_enabled': False,
+                                                 'risk_enabled': False, 'domain_add': True, 'domain_enforce': False,
+                                                 'refund_fee_payer': 'platform', 'version': app.extensions['operations'].rules.read()['version']})
         # WeChat only accepts a public https notify_url, while this browser talks to the loopback address
         app.extensions['site_settings'].save({'origin': 'https://pay.example.test'})
         store = app.extensions['store']

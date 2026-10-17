@@ -86,7 +86,6 @@ onBeforeUnmount(() => { disposed = true; clearInterval(poll); clearTimeout(copyT
         <div><label for="test-amount">{{ t('金额（CNY）', 'Amount (CNY)') }}</label><div class="currency-input"><span>¥</span><input id="test-amount" v-model="amount" inputmode="decimal" pattern="[0-9]+(\.[0-9]{1,2})?" required :disabled="busy" /></div></div>
         <div><label for="test-subject">{{ t('商品名称', 'Item name') }}</label><input id="test-subject" v-model="subject" required maxlength="128" :disabled="busy" /></div>
       </div>
-      <p class="field-hint">{{ t('单笔测试上限', 'Test limit per order') }} ¥ {{ c.caps.value?.max_amount || '—' }}</p>
       <p v-if="error" class="error-box" role="alert">{{ error }}</p>
       <button class="button full-width" :disabled="busy"><Icon :name="busy ? 'loader' : 'plus'" :class="{ spin: busy }" :size="17" />{{ busy ? t('正在创建…', 'Creating…') : t('创建支付订单', 'Create payment order') }}</button>
       <div v-if="result" class="created-payment">

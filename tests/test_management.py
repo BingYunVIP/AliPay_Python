@@ -36,7 +36,7 @@ class ManagementTests(unittest.TestCase):
         self.assertEqual(values['BYPAY_ADMIN_PASSWORD'],'admin')
         row=management.admin_row(values)
         self.assertTrue(check_password_hash(row['password'],'admin'))
-        app=create_app({**values,'BYPAY_RUN_MODE':'managed'})
+        app=create_app({**values,'BYPAY_RUN_MODE':'managed','ALLOW_REGISTRATION':'true','BYPAY_EMAIL_DOMAINS':'example.test'})
         client=app.test_client()
         self.assertEqual(client.post('/api/auth/login',json={'email':'admin','password':'admin'}).status_code,200)
         self.assertEqual(client.post('/api/auth/register',json={'email':'other@example.test','password':'admin'}).status_code,400)

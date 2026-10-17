@@ -14,6 +14,7 @@ from cryptography.hazmat.primitives import hashes,serialization
 from cryptography.hazmat.primitives.asymmetric import rsa,padding
 
 from web.app import create_app
+from support import open_gates
 from bypay.alipay_client import AlipayClient
 from web.mailing import render,default_template
 from web.platform_rules import cents
@@ -28,8 +29,8 @@ class PlatformTests(unittest.TestCase):
 
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup);self.root=Path(self.temp.name)
-        self.cfg={'TESTING':True,'PUBLIC_BASE_URL':'http://localhost:888','DATABASE':str(self.root/'web.sqlite3'),'BYPAY_ADMIN_EMAIL':'admin','BYPAY_ADMIN_PASSWORD':'admin','ALLOW_REGISTRATION':'true','ALIPAY_APP_ID':'2026000000000000','ALIPAY_SELLER_ID':'2088000000000000','ALIPAY_PRIVATE_KEY':self.secret,'ALIPAY_PUBLIC_KEY':self.public}
-        self.app=create_app(self.cfg);self.store=self.app.extensions['store'];self.ops=self.app.extensions['operations'];self.mail=self.app.extensions['mailer'];self.bot=self.app.extensions['antibot']
+        self.cfg={'TESTING':True,'PUBLIC_BASE_URL':'http://localhost:888','DATABASE':str(self.root/'web.sqlite3'),'BYPAY_ADMIN_EMAIL':'admin','BYPAY_ADMIN_PASSWORD':'admin','ALLOW_REGISTRATION':'true','BYPAY_EMAIL_DOMAINS':'example.test','ALIPAY_APP_ID':'2026000000000000','ALIPAY_SELLER_ID':'2088000000000000','ALIPAY_PRIVATE_KEY':self.secret,'ALIPAY_PUBLIC_KEY':self.public}
+        self.app=create_app(self.cfg);open_gates(self.app);self.store=self.app.extensions['store'];self.ops=self.app.extensions['operations'];self.mail=self.app.extensions['mailer'];self.bot=self.app.extensions['antibot']
         self.admin=self.app.test_client();login=self.admin.post('/api/auth/login',json={'email':'admin','password':'admin'}).json
         self.admin_headers={'Origin':'http://localhost:888','X-CSRF-Token':login['csrf_token']}
         self.client,self.user,self.headers=self.register('user@example.test')

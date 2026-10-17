@@ -1,38 +1,48 @@
 <script setup>
 import { inject, nextTick, ref, watch } from 'vue'
 import { api, errorText, t } from '../state'
-import { fromWords, toLines, useDraft } from './useDraft'
+import { useDraft } from './useDraft'
 import FormGroup from './FormGroup.vue'
 import FormRow from './FormRow.vue'
 import SaveBar from './SaveBar.vue'
+import TagInput from './TagInput.vue'
 const c = inject('console')
 const { draft, dirty, load } = useDraft()
 const version = ref(0), busy = ref(false), error = ref(null)
+let hydrating = false
 c.guard(() => dirty.value)
 
 const read = value => ({
   registration: !!value.registration, max_amount: value.max_amount,
   order_timeout_minutes: value.order_timeout_minutes, poll_interval_seconds: value.poll_interval_seconds, query_window_minutes: value.query_window_minutes,
-  callback_first_delay_seconds: value.callback_first_delay_seconds, callback_timeout_seconds: value.callback_timeout_seconds, callback_retry_delays: (value.callback_retry_delays || []).join(', '),
-  origin: value.origin, notify_url: value.notify_url, return_url: value.return_url, callback_hosts: toLines(value.callback_hosts),
+  callback_first_delay_seconds: value.callback_first_delay_seconds, callback_timeout_seconds: value.callback_timeout_seconds, callback_retry_interval_seconds: value.callback_retry_interval_seconds,
+  origin: value.origin, notify_url: value.notify_url, return_url: value.return_url,
+  callback_hosts: [...(value.callback_hosts || [])], email_domains: [...(value.email_domains || [])],
 })
-function reload() { if (c.settings.value) { load(read(c.settings.value)); version.value = c.settings.value.version; error.value = null } }
+function reload() {
+  if (!c.settings.value) return
+  hydrating = true
+  load(read(c.settings.value)); version.value = c.settings.value.version; error.value = null
+  nextTick(() => { hydrating = false })
+}
 // Background refreshes bring in other people's changes, but never overwrite what is being typed
 watch(c.settings, () => { if (!dirty.value && !busy.value) reload() }, { immediate: true })
+// 只填站点地址：异步通知与同步返回地址按固定路径自动带出
+watch(() => draft.origin, value => {
+  if (hydrating) return
+  const origin = String(value || '').trim().replace(/\/$/, '')
+  draft.origin = origin
+  draft.notify_url = origin.startsWith('https://') ? `${origin}/alipay/notify` : ''
+  draft.return_url = origin ? `${origin}/alipay/return` : ''
+})
 
 const invalid = key => error.value?.field === key
 const message = key => invalid(key) ? error.value.message : ''
 const aria = key => ({ 'aria-invalid': invalid(key) || null, 'aria-describedby': invalid(key) ? `site-${key}-error` : null })
-function fillRoutes() {
-  const origin = String(draft.origin || '').replace(/\/$/, '')
-  draft.origin = origin
-  draft.notify_url = origin.startsWith('https://') ? `${origin}/alipay/notify` : ''
-  draft.return_url = `${origin}/alipay/return`
-}
 async function save() {
   if (busy.value || !dirty.value) return
   busy.value = true; error.value = null
-  const payload = { ...draft, callback_hosts: fromWords(draft.callback_hosts), callback_retry_delays: fromWords(draft.callback_retry_delays).map(Number), version: version.value }
+  const payload = { ...draft, version: version.value }
   try {
     await api('/api/admin/settings', { method: 'PUT', body: JSON.stringify(payload) })
     await c.refresh(true)
@@ -45,13 +55,15 @@ async function save() {
   // a disabled field cannot take focus, so this waits until the form is enabled again
   if (error.value?.field) { await nextTick(); document.getElementById(`site-${error.value.field}`)?.focus() }
 }
-
 </script>
 <template>
   <form class="settings-form" novalidate @submit.prevent="save">
     <div class="form-groups">
       <FormGroup :title="t('访问与交易', 'Access & payments')">
         <FormRow field="site-registration" :label="t('开放用户注册', 'Allow registration')" :hint="t('允许新用户创建普通账户', 'Allow new users to create accounts')"><input id="site-registration" name="registration" v-model="draft.registration" type="checkbox" role="switch" class="form-switch" :disabled="busy" /></FormRow>
+        <FormRow field="site-email_domains" stacked :label="t('邮箱域名白名单', 'Allowed email domains')" :hint="t('只接受这些域名的邮箱注册，输入后按回车添加；支持 *.edu.cn 这类通配', 'Only these domains may sign up. Press Enter to add one; wildcards such as *.edu.cn are supported')" :error="message('email_domains')">
+          <TagInput id="site-email_domains" v-model="draft.email_domains" normalize="domain" :placeholder="t('@qq.com、*.edu.cn', '@qq.com, *.edu.cn')" :disabled="busy" />
+        </FormRow>
         <FormRow field="site-max_amount" :label="t('单笔测试金额上限', 'Maximum test amount')" :hint="`${t('不能超过服务器额度', 'Server ceiling')} ¥ ${c.settings.value?.amount_ceiling || '3000.00'}`" :error="message('max_amount')">
           <div class="unit-field"><input id="site-max_amount" name="max_amount" v-model="draft.max_amount" class="field" inputmode="decimal" autocomplete="off" required :disabled="busy" v-bind="aria('max_amount')" /><span class="unit">{{ t('元', 'CNY') }}</span></div>
         </FormRow>
@@ -76,24 +88,23 @@ async function save() {
         <FormRow field="site-callback_timeout_seconds" :label="t('回调请求超时', 'Request timeout')" :error="message('callback_timeout_seconds')">
           <div class="unit-field"><input id="site-callback_timeout_seconds" name="callback_timeout_seconds" v-model.number="draft.callback_timeout_seconds" class="field" type="number" min="2" max="30" step="1" required :disabled="busy" v-bind="aria('callback_timeout_seconds')" /><span class="unit">{{ t('秒', 'sec') }}</span></div>
         </FormRow>
-        <FormRow field="site-callback_retry_delays" stacked :label="t('失败重试间隔', 'Retry intervals')" :hint="t('单位为秒，以逗号分隔，最多 8 次重试，留空表示不重试', 'Seconds separated by commas; up to 8 retries, blank disables retries')" :error="message('callback_retry_delays')">
-          <input id="site-callback_retry_delays" name="callback_retry_delays" v-model="draft.callback_retry_delays" class="field" placeholder="30, 120, 600, 1800, 3600" autocomplete="off" spellcheck="false" :disabled="busy" v-bind="aria('callback_retry_delays')" />
+        <FormRow field="site-callback_retry_interval_seconds" :label="t('失败重试间隔', 'Retry interval')" :hint="t('失败后每隔这么久重试一次，最多 8 次', 'Retry this often after a failure, up to 8 times')" :error="message('callback_retry_interval_seconds')">
+          <div class="unit-field"><span class="unit unit-prefix">{{ t('每', 'every') }}</span><input id="site-callback_retry_interval_seconds" name="callback_retry_interval_seconds" v-model.number="draft.callback_retry_interval_seconds" class="field has-prefix" type="number" min="5" max="86400" step="1" required :disabled="busy" v-bind="aria('callback_retry_interval_seconds')" /><span class="unit">{{ t('秒', 'sec') }}</span></div>
         </FormRow>
       </FormGroup>
 
       <FormGroup :title="t('域名与通知', 'Domains & notifications')">
-        <template #action><button type="button" class="text-link" :disabled="busy" @click="fillRoutes">{{ t('填充默认路径', 'Fill default paths') }}</button></template>
-        <FormRow field="site-origin" stacked :label="t('Pay 站点地址', 'Pay site address')" :hint="t('域名需已解析并配置 HTTPS', 'The domain needs DNS and HTTPS configured')" :error="message('origin')">
+        <FormRow field="site-origin" stacked :label="t('Pay 站点地址', 'Pay site address')" :hint="t('域名需已解析并配置 HTTPS；下面两个地址会按站点地址自动填写', 'The domain needs DNS and HTTPS; the two addresses below follow it automatically')" :error="message('origin')">
           <input id="site-origin" name="origin" v-model.trim="draft.origin" class="field" type="url" placeholder="https://pay.bingyun.vip" autocomplete="off" spellcheck="false" required :disabled="busy" v-bind="aria('origin')" />
         </FormRow>
-        <FormRow field="site-notify_url" stacked :label="t('支付宝异步通知地址', 'Alipay notification URL')" :hint="t('填写指向 Pay 服务的公网地址，本地无公网入口时可留空', 'A public endpoint for Pay; leave blank when localhost has no public entry')" :error="message('notify_url')">
+        <FormRow field="site-notify_url" stacked :label="t('异步通知地址', 'Asynchronous notification URL')" :hint="t('由站点地址自动填写；本地没有公网入口时留空', 'Filled in from the site address; left blank when there is no public entry')" :error="message('notify_url')">
           <input id="site-notify_url" name="notify_url" v-model.trim="draft.notify_url" class="field" type="url" placeholder="https://pay.bingyun.vip/alipay/notify" autocomplete="off" spellcheck="false" :disabled="busy" v-bind="aria('notify_url')" />
         </FormRow>
-        <FormRow field="site-return_url" stacked :label="t('支付宝同步返回地址', 'Alipay browser return URL')" :error="message('return_url')">
+        <FormRow field="site-return_url" stacked :label="t('同步返回地址', 'Browser return URL')" :hint="t('由站点地址自动填写', 'Filled in from the site address')" :error="message('return_url')">
           <input id="site-return_url" name="return_url" v-model.trim="draft.return_url" class="field" type="url" placeholder="https://pay.bingyun.vip/alipay/return" autocomplete="off" spellcheck="false" required :disabled="busy" v-bind="aria('return_url')" />
         </FormRow>
-        <FormRow field="site-callback_hosts" stacked :label="t('商户回调域名白名单', 'Allowed merchant callback domains')" :hint="t('每行一个域名，不含协议与路径，用于接收 Pay 发出的业务回调', 'One domain per line without scheme or path, for business callbacks sent by Pay')" :error="message('callback_hosts')">
-          <textarea id="site-callback_hosts" name="callback_hosts" v-model="draft.callback_hosts" class="field mono" rows="3" placeholder="test.bingyun.vip" autocomplete="off" spellcheck="false" :disabled="busy" v-bind="aria('callback_hosts')"></textarea>
+        <FormRow field="site-callback_hosts" stacked :label="t('商户回调域名白名单', 'Allowed merchant callback domains')" :hint="t('输入域名后按回车添加，自动去掉 http(s):// 与路径；用于接收 Pay 发出的业务回调', 'Press Enter to add a domain; scheme and path are removed. Pay only calls these hosts')" :error="message('callback_hosts')">
+          <TagInput id="site-callback_hosts" v-model="draft.callback_hosts" normalize="domain" linkable :placeholder="t('test.bingyun.vip', 'test.bingyun.vip')" :disabled="busy" />
         </FormRow>
       </FormGroup>
     </div>

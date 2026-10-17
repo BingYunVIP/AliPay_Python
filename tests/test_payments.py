@@ -18,6 +18,7 @@ from bypay.notify_server import NotifyServer
 from bypay.order_store import OrderStore
 from web.app import create_app
 from web.webhooks import deliver_one, send_to_merchant, validate_callback
+from support import open_gates
 
 
 class PaymentTests(unittest.TestCase):
@@ -37,7 +38,9 @@ class PaymentTests(unittest.TestCase):
                                "DATABASE": str(self.root / "pay.sqlite3"), "ALIPAY_APP_ID": "2026000000000000",
                                "ALIPAY_SELLER_ID": "2088000000000000", "ALIPAY_PRIVATE_KEY": self.private,
                                "ALIPAY_PUBLIC_KEY": self.public, "BYPAY_ADMIN_EMAIL": "admin@example.test",
-                               "BYPAY_ADMIN_PASSWORD": "Test-admin-password-123", "BYPAY_CALLBACK_HOSTS": "test.bingyun.vip"})
+                               "BYPAY_ADMIN_PASSWORD": "Test-admin-password-123", "BYPAY_CALLBACK_HOSTS": "test.bingyun.vip",
+                               "ALLOW_REGISTRATION": "true", "BYPAY_EMAIL_DOMAINS": "example.test"})
+        open_gates(self.app)
         self.client = self.app.test_client()
         self.store = self.app.extensions["store"]
         response = self.client.post("/api/auth/register", json={"email": "user@example.test", "password": "Test-user-password-123", "role": "admin"})
@@ -64,6 +67,13 @@ class PaymentTests(unittest.TestCase):
 
     def notify(self, params):
         return self.client.post("/alipay/notify", data=params)
+
+    def test_order_records_the_real_client_ip_behind_a_local_proxy(self):
+        order = self.create().json["order"]
+        self.assertEqual(order["client_ip"], "127.0.0.1")
+        payload = {"out_trade_no": "TEST_ORDER_0002", "amount": "0.01", "subject": "测试商品", "channel": "alipay", "product": "page"}
+        forwarded = self.client.post("/api/v1/payments", json=payload, headers={**self.headers, "X-Forwarded-For": "8.8.8.8, 10.0.0.2"})
+        self.assertEqual(forwarded.json["order"]["client_ip"], "8.8.8.8")
 
     def test_checkout_is_a_real_sdk_signed_url_without_network(self):
         response = self.create()

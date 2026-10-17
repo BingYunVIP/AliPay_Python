@@ -78,13 +78,28 @@ class OperationalSettingsTests(unittest.TestCase):
                    ({'query_window_minutes': 1}, 'query_window_minutes'),
                    ({'callback_timeout_seconds': 100}, 'callback_timeout_seconds'),
                    ({'callback_first_delay_seconds': -1}, 'callback_first_delay_seconds'),
-                   ({'callback_retry_delays': [30, 5]}, 'callback_retry_delays')]
+                   ({'callback_retry_interval_seconds': 2}, 'callback_retry_interval_seconds'),
+                   ({'callback_retry_interval_seconds': '30'}, 'callback_retry_interval_seconds'),
+                   ({'email_domains': ['*.']}, 'email_domains')]
         for payload, field in invalid:
             with self.subTest(payload=payload):
                 response = self.save(**payload, registration=False)
                 self.assertEqual(response.status_code, 400)
                 self.assertEqual(response.json['field'], field)
                 self.assertTrue(self.app.extensions['site_settings'].read()['registration'])
+
+    def test_registration_only_accepts_the_configured_email_domains(self):
+        from web.settings import EMAIL_DOMAINS_DEFAULT
+        self.assertEqual(EMAIL_DOMAINS_DEFAULT, ['qq.com', 'gmail.com', '*.edu.cn', '163.com'])
+        self.assertEqual(self.app.extensions['site_settings'].read()['email_domains'], ['example.test'])
+        self.assertEqual(self.save(registration=True).status_code, 200)
+        client = self.app.test_client()
+        self.assertEqual(client.post('/api/auth/register', json={'email': 'user@outlook.com', 'password': 'Test-password-123'}).json['error'], 'email_domain_not_allowed')
+        self.assertEqual(client.post('/api/auth/register', json={'email': 'second@example.test', 'password': 'Test-password-123'}).status_code, 200)
+        self.assertEqual(self.save(email_domains=['*.example.test']).status_code, 200)
+        self.assertEqual(client.post('/api/auth/register', json={'email': 'user@shop.example.test', 'password': 'Test-password-123'}).status_code, 200)
+        self.assertEqual(self.save(email_domains=['example.org']).status_code, 200)
+        self.assertEqual(client.post('/api/auth/register', json={'email': 'user@example.test', 'password': 'Test-password-123'}).json['error'], 'email_domain_not_allowed')
 
     def test_version_conflict_and_admin_permission(self):
         self.assertEqual(self.client.put('/api/admin/settings', json={'order_timeout_minutes': 30}, headers=self.headers).status_code, 403)
@@ -110,7 +125,7 @@ class OperationalSettingsTests(unittest.TestCase):
         self.assertEqual(check['locked_until'], order['created_at'] + 24)
 
     def test_callback_delay_timeout_retries_are_executed(self):
-        self.save(callback_first_delay_seconds=9, callback_timeout_seconds=17, callback_retry_delays=[11, 23])
+        self.save(callback_first_delay_seconds=9, callback_timeout_seconds=17, callback_retry_interval_seconds=11)
         self.create(notify_url='https://test.bingyun.vip/notify')
         now = int(time.time())
         with patch('web.store.time.time', return_value=now):
@@ -123,10 +138,12 @@ class OperationalSettingsTests(unittest.TestCase):
             row = db.execute('SELECT * FROM outbox').fetchone()
             self.assertEqual(row['next_attempt'], now + 21)
             self.assertEqual(row['attempts'], 1)
-        self.save(callback_retry_delays=[])
+        # 固定间隔重试，最多 8 次：第 9 次失败后不再排队
+        with self.store.connect() as db: db.execute('UPDATE outbox SET attempts=8')
         with patch('web.store.time.time', return_value=now + 22):
             job = self.store.claim_delivery()
             self.assertEqual(self.store.finish_delivery(job, False), 'failed')
+            self.assertEqual(self.store.policy()['callback_retry_interval_seconds'], 11)
 
     def test_verification_window_limits_automatic_queries_but_allows_manual_recovery(self):
         self.save(query_window_minutes=15)

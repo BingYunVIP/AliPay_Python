@@ -27,7 +27,7 @@ from .webhooks import WebhookSigner, validate_callback, local_callback_origins
 from .console import install_console
 from .channels import ChannelError, ChannelStore, FIELDS, INTEGRATED, REQUIRED as REQUIRED_FIELDS
 from .reconcile import Reconciler, yuan
-from .settings import SiteSettings, SettingsError
+from .settings import SiteSettings, SettingsError, email_allowed
 from .refunds import Refunds, RefundError
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -312,6 +312,8 @@ def create_app(settings=None):
         if action == "register":
             if not store.setting("registration", app.config["ALLOW_REGISTRATION"] == "true"):
                 raise ApiError("registration_closed", 403)
+            if not email_allowed(email, site.read()["email_domains"]):
+                raise ApiError("email_domain_not_allowed", 403)
             if len(password) < 12:
                 raise ApiError("password_too_short")
             try:
@@ -596,8 +598,9 @@ def create_app(settings=None):
         if existing:
             matching(existing)
             if existing["pay_url"] or json.loads(existing["payment_payload"]) or existing["status"] != "CREATED": return replay(existing)
+        client_ip = operations.rules.client_ip(request)  # 真实访客 IP，写进订单并在订单列表显示
         if not existing and not internal:
-            try:operations.precheck(g.user['id'],payload['subject'],payload['amount'],notify_url,number,operations.rules.client_ip(request),admin=g.user['role']=='admin')
+            try:operations.precheck(g.user['id'],payload['subject'],payload['amount'],notify_url,number,client_ip,admin=g.user['role']=='admin')
             except ValueError as exc:raise ApiError(str(exc),403) from None
         if not existing and channel == "alipay" and not store.setting("alipay_enabled", True):
             raise ApiError("channel_disabled", 403)
@@ -623,7 +626,7 @@ def create_app(settings=None):
         if payload["product"] == "mini":
             if not existing:
                 try:
-                    existing = store.create_order(g.user["id"], payload, "", order_cfg, request_hash=request_hash)
+                    existing = store.create_order(g.user["id"], payload, "", order_cfg, request_hash=request_hash, client_ip=client_ip)
                 except sqlite3.IntegrityError:
                     existing = store.order(number)
                     matching(existing)
@@ -659,7 +662,7 @@ def create_app(settings=None):
         if payload["product"] == "app":
             payment = {"kind": "app", "order_string": pay_client.create_app_pay_string(number, amount, payload["subject"])}
             try:
-                order = store.create_order(g.user["id"], payload, "", order_cfg, payment_payload=payment, request_hash=request_hash)
+                order = store.create_order(g.user["id"], payload, "", order_cfg, payment_payload=payment, request_hash=request_hash, client_ip=client_ip)
             except sqlite3.IntegrityError:
                 return replay(store.order(number))
             trace("sdk.link", "app_order_signed", {"method": "alipay.trade.app.pay", "expires_at": expires_at}, number, g.user["id"])
@@ -674,7 +677,7 @@ def create_app(settings=None):
               "parameter_names": sorted(query), "notify_url": order_cfg["notify_url"], "return_url": return_base,
               "note": "此刻仅本地签名；随后由后台预取，或用户打开收银台时，才会向支付宝请求二维码，支付宝才可能创建交易。"}, number, g.user["id"])
         try:
-            order = store.create_order(g.user["id"], payload, pay_url, order_cfg, return_token, {"kind": "url", "url": pay_url}, request_hash)
+            order = store.create_order(g.user["id"], payload, pay_url, order_cfg, return_token, {"kind": "url", "url": pay_url}, request_hash, client_ip=client_ip)
         except sqlite3.IntegrityError:
             return replay(store.order(number))
         trace("create.saved", "order_saved", {"status": order["status"], "amount": amount}, number, g.user["id"])
@@ -721,7 +724,7 @@ def create_app(settings=None):
         trace("create.received", "request_validated", payload, number, g.user["id"])
         if not existing:
             try:
-                existing = store.create_order(g.user["id"], payload, "", order_cfg, request_hash=request_hash)
+                existing = store.create_order(g.user["id"], payload, "", order_cfg, request_hash=request_hash, client_ip=operations.rules.client_ip(request))
             except sqlite3.IntegrityError:
                 existing = store.order(number)
                 matching(existing)

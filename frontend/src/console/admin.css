@@ -62,6 +62,12 @@
 .dirty-dot { flex-shrink: 0; width: 7px; height: 7px; border-radius: 50%; background: var(--amber); }
 .form-footer { animation: footer-in .2s ease-out; }
 .form-footer.idle { display: none; }
+/* 系统管理：保存与放弃修改放在页面标题最右边 */
+.heading-actions { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+.heading-actions .form-footer { position: static; margin: 0; padding: 0; border: 0; background: none; backdrop-filter: none; animation: none; }
+.heading-actions .form-footer-state { margin-right: 4px; font-size: 11px; }
+.heading-actions .form-footer-actions { gap: 10px; }
+.heading-actions .form-footer .button { min-height: 38px; }
 @keyframes footer-in { from { opacity: 0; transform: translateY(8px); } }
 .form-footer-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
 .form-footer .button { min-height: 40px; }
@@ -177,6 +183,20 @@
 .mail-test > div { flex: 1; max-width: 360px; }
 .mail-test label { margin: 0 0 7px; color: var(--muted); font-size: 12px; font-weight: 500; }
 .mail-test .button { flex-shrink: 0; min-height: 38px; }
+
+/* ---------- tag input: 输入后回车变成标签，宽度随内容变化 ---------- */
+.tag-input { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; width: 100%; min-height: 42px; padding: 6px 8px; border: 1px solid var(--console-border); border-radius: 9px; background-color: var(--console-inset); }
+.tag-input:focus-within { border-color: color-mix(in srgb, var(--accent) 55%, var(--console-border)); }
+.tag-input.disabled { opacity: .6; }
+.tag-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 3px 4px 3px 9px; border-radius: 7px; background: color-mix(in srgb, var(--accent) 9%, transparent); color: var(--text); font: 11px/1.7 var(--mono); }
+.tag-chip > a, .tag-chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tag-chip > a { color: var(--accent); }
+.tag-remove { display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; color: var(--faint); background: none; }
+.tag-remove:hover { background: color-mix(in srgb, var(--red) 14%, transparent); color: var(--red); }
+.pay-console .tag-field { flex: 1 1 160px; width: auto; min-width: 110px; min-height: 26px; height: 26px; padding: 0 4px; border: 0; background: none; font-size: 12px; }
+.pay-console .tag-field:focus { outline: none; }
+.unit-field > .unit.unit-prefix { left: 12px; right: auto; }
+.unit-field > .field.has-prefix { padding-left: 34px; }
 
 /* ---------- responsive ---------- */
 /* below this width the table no longer fits, and a settlement becomes a card */

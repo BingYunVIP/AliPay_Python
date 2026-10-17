@@ -16,6 +16,7 @@ from werkzeug.datastructures import MultiDict
 from bypay.epay_protocol import canonical, public_pem, signed, verify
 from bypay.alipay_client import AlipayClient
 from web.app import create_app
+from support import open_gates
 from web.webhooks import deliver_one
 
 
@@ -32,9 +33,10 @@ class EpayTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup);self.root=Path(self.temp.name)
         dist=self.root/'dist';dist.mkdir();(dist/'index.html').write_text('<html>cashier</html>')
-        self.app=create_app({'TESTING':True,'PUBLIC_BASE_URL':'https://pay.example.test','DATABASE':str(self.root/'pay.sqlite3'),'FRONTEND_DIST':str(dist),
+        self.app=create_app({'TESTING':True,'PUBLIC_BASE_URL':'https://pay.example.test','DATABASE':str(self.root/'pay.sqlite3'),'FRONTEND_DIST':str(dist),'ALLOW_REGISTRATION':'true','BYPAY_EMAIL_DOMAINS':'example.test',
             'BYPAY_ADMIN_EMAIL':'admin@example.test','BYPAY_ADMIN_PASSWORD':'test-password-123','ALLOW_REGISTRATION':'true',
             'ALIPAY_ENV':'sandbox','ALIPAY_APP_ID':'2026000000000000','ALIPAY_SELLER_ID':'2088000000000000','ALIPAY_PRIVATE_KEY':secret_pem(self.app_key),'ALIPAY_PUBLIC_KEY':public_pem(self.provider_key),'BYPAY_CALLBACK_HOSTS':'merchant.example'})
+        open_gates(self.app)
         self.client=self.app.test_client();self.store=self.app.extensions['store'];self.merchants=self.app.extensions['merchants']
         user=self.store.register('merchant@example.test','test-password-123');self.user=user['id']
         self.profile=self.merchants.update(self.user,{'merchant_public_key':public_pem(self.merchant_key)})

@@ -5,14 +5,15 @@ import re
 from decimal import Decimal,InvalidOperation
 
 DEFAULTS={
- 'registration_review':False,'registration_paid':False,'registration_fee':'10.00',
- 'domain_add':False,'domain_enforce':False,'merchant_refund':False,'refund_fee_payer':'platform',
+ 'registration_review':True,'registration_paid':True,'registration_fee':'10.00',
+ 'domain_add':True,'domain_enforce':True,'merchant_refund':False,'refund_fee_payer':'merchant',
  # 商户每笔手续费 = 订单金额 × 费率，四舍五入到分；不足最低手续费时按最低收取（默认 0.01 元）
  'fee_rate':'1.50','fee_threshold':'0.01','fee_minimum':'0.01',
- 'blocked_keywords':[],'blocked_message':'该商品暂不支持支付',
+ 'blocked_keywords':['代付','跑分','洗钱','赌博','博彩','彩票','私彩','六合彩','色情','裸聊','毒品','枪支','刷单','套现','资金盘','传销','比特币','USDT','casino','gambling','betting','porn'],
+ 'blocked_message':'该商品暂不支持支付',
  'invite_enabled':False,'invite_basis':'fee','invite_rate':'10.00','invite_cap_fee':True,'invite_timing':'immediate',
- 'deposit_enabled':False,'deposit_minimum':'10.00','deposit_freeze_days':7,'merchant_domain_limit':1,
- 'risk_enabled':False,'risk_window_seconds':300,'risk_merchant_count':60,'risk_ip_count':30,'risk_daily_amount':'0.00',
+ 'deposit_enabled':True,'deposit_minimum':'10.00','deposit_freeze_days':30,'merchant_domain_limit':1,
+ 'risk_enabled':True,'risk_window_seconds':300,'risk_merchant_count':60,'risk_ip_count':30,'risk_daily_amount':'0.00',
  'risk_failure_count':30,'risk_min_success_rate':'5.00','risk_callback_failures':10,'blocked_ips':[],
  'settlement_mode':'off','settlement_days':1,'settlement_minimum':'10.00','settlement_rate':'0.00','settlement_fee_min':'0.00','settlement_fee_max':'0.00','settlement_daily_limit':1,
  'ip_source':'remote','trusted_proxies':[],
@@ -75,12 +76,26 @@ class PlatformRules:
             db.execute("INSERT INTO console_settings VALUES ('platform_rules',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(json.dumps(new,ensure_ascii=False),))
         return new
 
+    @staticmethod
+    def _forwarded_ip(request,peer):
+        """Nginx 反代或 Cloudflare Tunnel 下 REMOTE_ADDR 是回环/内网地址，真实访客在转发头里。"""
+        if not (peer.is_loopback or peer.is_private):return str(peer)
+        for header in ('CF-Connecting-IP','X-Real-IP','X-Forwarded-For'):
+            value=request.headers.get(header,'')
+            if not value:continue
+            for item in (part.strip() for part in value.split(',')):
+                try:candidate=ipaddress.ip_address(item)
+                except ValueError:continue
+                if candidate.is_global:return str(candidate)
+        return str(peer)
+
     def client_ip(self,request):
         rules=self.read();raw=request.environ.get('werkzeug.proxy_fix.orig',{}).get('REMOTE_ADDR',request.environ.get('REMOTE_ADDR',''))
         try:peer=ipaddress.ip_address(raw)
         except ValueError:return ''
+        if rules['ip_source']=='remote':return self._forwarded_ip(request,peer)
         trusted=[ipaddress.ip_network(v) for v in rules['trusted_proxies']]
-        if rules['ip_source']=='remote' or not any(peer in net for net in trusted):return str(peer)
+        if not any(peer in net for net in trusted):return str(peer)
         header={'x_real_ip':'X-Real-IP','x_forwarded_for':'X-Forwarded-For','cf_connecting_ip':'CF-Connecting-IP'}[rules['ip_source']]
         value=request.headers.get(header,'')
         try:

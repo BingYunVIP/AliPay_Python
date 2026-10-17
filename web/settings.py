@@ -8,9 +8,24 @@ from bypay.payment_validation import money
 
 TIMING_DEFAULTS = {
     "order_timeout_minutes": 15, "poll_interval_seconds": 10,
-    "query_window_minutes": 1440, "callback_timeout_seconds": 10,
-    "callback_first_delay_seconds": 0, "callback_retry_delays": [30, 120, 600, 1800, 3600],
+    # 核验 30 分钟：订单 15 分钟到期后仍留一段主动查单的余量，足够覆盖用户扫码后延迟付款
+    "query_window_minutes": 30, "callback_timeout_seconds": 10,
+    "callback_first_delay_seconds": 0, "callback_retry_interval_seconds": 30,
 }
+# 新账号只接受这些邮箱域名（支持 *.edu.cn 这类通配）
+EMAIL_DOMAINS_DEFAULT = ["qq.com", "gmail.com", "*.edu.cn", "163.com"]
+EMAIL_DOMAIN = re.compile(r"(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}")
+
+
+def email_allowed(address, domains):
+    """注册邮箱是否属于允许的域名；白名单为空表示不限制。"""
+    if not domains: return True
+    domain = address.rsplit("@", 1)[-1].strip().lower()
+    for entry in domains:
+        if entry.startswith("*."):
+            if domain == entry[2:] or domain.endswith(entry[1:]): return True
+        elif domain == entry: return True
+    return False
 
 
 class SettingsError(ValueError):
@@ -38,16 +53,25 @@ class SiteSettings:
         self.defaults = {**TIMING_DEFAULTS, "origin": config["PUBLIC_BASE_URL"].rstrip("/"),
             "notify_url": payment["notify_url"], "return_url": payment["return_url"],
             "callback_hosts": sorted({h.strip() for h in config.get("BYPAY_CALLBACK_HOSTS", "test.bingyun.vip").split(",") if h.strip()}),
-            "registration": config.get("ALLOW_REGISTRATION", "true") == "true", "alipay_enabled": True,
+            "registration": config.get("ALLOW_REGISTRATION", "false") == "true",
+            "email_domains": [part.strip().lower() for part in str(config.get("BYPAY_EMAIL_DOMAINS", "")).split(",") if part.strip()] or list(EMAIL_DOMAINS_DEFAULT),
+            "alipay_enabled": True,
             "max_amount": money(config.get("TEST_MAX_AMOUNT", "3000.00")), "version": 0}
         self.ceiling = self.defaults["max_amount"]
         self.allow_http = config.get("BYPAY_ALLOW_HTTP") == "1"
+        # 2026-10-18 的默认值调整：只改仍停留在旧默认值的行，用户改过的值不动
+        with store.connect() as db:
+            db.execute("UPDATE console_settings SET value='30' WHERE key='query_window_minutes' AND value='1440'")
+            db.execute("UPDATE console_settings SET value='false' WHERE key='registration' AND value='true'")
 
     def read(self, db=None):
         if db is None:
             with self.store.connect() as connection:
                 return self.read(connection)
         saved = {row["key"]: json.loads(row["value"]) for row in db.execute("SELECT * FROM console_settings")}
+        # 旧版的“失败重试间隔”是一串秒数；现在只用一个固定间隔，取原来的第一个值
+        if "callback_retry_interval_seconds" not in saved and isinstance(saved.get("callback_retry_delays"), list) and saved["callback_retry_delays"]:
+            saved["callback_retry_interval_seconds"] = saved["callback_retry_delays"][0]
         return {**self.defaults, **{k: v for k, v in saved.items() if k in self.defaults}}
 
     def urls(self):
@@ -102,14 +126,19 @@ class SiteSettings:
             cfg["callback_hosts"] = sorted(set(normalized))
             for key, bounds in {"order_timeout_minutes": (1, 1440), "poll_interval_seconds": (3, 300),
                                 "query_window_minutes": (1, 4320), "callback_timeout_seconds": (2, 30),
-                                "callback_first_delay_seconds": (0, 3600)}.items():
+                                "callback_first_delay_seconds": (0, 3600), "callback_retry_interval_seconds": (5, 86400)}.items():
                 if type(cfg[key]) is not int or not bounds[0] <= cfg[key] <= bounds[1]: raise SettingsError(field=key)
             if cfg["query_window_minutes"] < cfg["order_timeout_minutes"]:
                 raise SettingsError(field="query_window_minutes")
-            delays = cfg["callback_retry_delays"]
-            if not isinstance(delays, list) or len(delays) > 8 or any(type(v) is not int or not 5 <= v <= 86400 for v in delays):
-                raise SettingsError(field="callback_retry_delays")
-            if delays != sorted(delays): raise SettingsError(field="callback_retry_delays")
+            domains = cfg["email_domains"]
+            if not isinstance(domains, list) or len(domains) > 50: raise SettingsError(field="email_domains")
+            cleaned = []
+            for entry in domains:
+                if not isinstance(entry, str) or len(entry) > 253: raise SettingsError(field="email_domains")
+                entry = entry.strip().lower()
+                if not EMAIL_DOMAIN.fullmatch(entry) or entry.endswith((".localhost", ".local")): raise SettingsError(field="email_domains")
+                cleaned.append(entry)
+            cfg["email_domains"] = list(dict.fromkeys(cleaned))
             cfg["version"] = old["version"] + 1
             for key in {*updates, "version"}:
                 db.execute("INSERT INTO console_settings VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, json.dumps(cfg[key])))

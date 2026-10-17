@@ -15,6 +15,7 @@ from bypay import logger
 from bypay.epay_protocol import public_pem, signed
 from bypay.wechat_client import WechatClient
 from web.app import create_app
+from support import open_gates
 from web.webhooks import deliver_one
 from wechat_fake import FakeWechat, pem_private
 
@@ -34,8 +35,9 @@ class WechatCase(unittest.TestCase):
         dist.mkdir()
         (dist / "index.html").write_text("<html>pay</html>")
         self.app = create_app({"TESTING": True, "PUBLIC_BASE_URL": "https://pay.example.test", "DATABASE": str(self.root / "pay.sqlite3"), "FRONTEND_DIST": str(dist),
-                               "BYPAY_ADMIN_EMAIL": "admin@example.test", "BYPAY_ADMIN_PASSWORD": "Admin-password-123", "ALLOW_REGISTRATION": "true",
+                               "BYPAY_ADMIN_EMAIL": "admin@example.test", "BYPAY_ADMIN_PASSWORD": "Admin-password-123", "ALLOW_REGISTRATION": "true", "BYPAY_EMAIL_DOMAINS": "example.test",
                                "BYPAY_CALLBACK_HOSTS": "merchant.example", "WECHAT_CLIENT_FACTORY": lambda cfg: WechatClient(cfg, transport=self.fake.transport)})
+        open_gates(self.app)
         self.store = self.app.extensions["store"]
         self.channels = self.app.extensions["channels"]
         self.admin = self.app.test_client()

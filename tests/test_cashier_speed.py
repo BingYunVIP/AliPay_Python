@@ -25,6 +25,7 @@ import web.cashier as cashier
 import web.service as service
 from bypay import key_utils
 from web.app import create_app
+from support import open_gates
 from web.cashier import CashierFetcher, Prefetch, Warmer, fetch_cashier_qr, qr_inline
 
 GATEWAY = "https://openapi.alipay.com/gateway.do?method=alipay.trade.page.pay&sign=x"
@@ -323,7 +324,9 @@ class AppCase(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         app = create_app({"TESTING": True, "PUBLIC_BASE_URL": "https://pay.example.test", "TEST_MAX_AMOUNT": "10.00", "DATABASE": str(Path(temp.name) / "pay.sqlite3"),
                           "ALIPAY_APP_ID": "2026000000000000", "ALIPAY_SELLER_ID": "2088000000000000", "ALIPAY_PRIVATE_KEY": self.private, "ALIPAY_PUBLIC_KEY": self.public,
-                          "BYPAY_ADMIN_EMAIL": "admin@example.test", "BYPAY_ADMIN_PASSWORD": "Test-admin-password-123", "BYPAY_CALLBACK_HOSTS": "test.bingyun.vip", **config})
+                          "BYPAY_ADMIN_EMAIL": "admin@example.test", "BYPAY_ADMIN_PASSWORD": "Test-admin-password-123", "BYPAY_CALLBACK_HOSTS": "test.bingyun.vip",
+                          "ALLOW_REGISTRATION": "true", "BYPAY_EMAIL_DOMAINS": "example.test", **config})
+        open_gates(app)
         self.addCleanup(app.extensions["qr_warmer"].stop)  # runs last: the temporary database is removed before that
         self.addCleanup(app.extensions["qr_prefetch"].wait)
         client = app.test_client()

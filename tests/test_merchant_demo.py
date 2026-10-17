@@ -22,6 +22,7 @@ from bypay.alipay_client import AlipayClient
 from bypay.epay_protocol import public_pem
 from bypay.wechat_client import WechatClient
 from web.app import ROOT, create_app
+from support import open_gates
 from web.webhooks import deliver_one, validate_callback
 from wechat_fake import FakeWechat
 
@@ -63,6 +64,7 @@ class MerchantDemoAgainstPayTests(unittest.TestCase):
                                "BYPAY_CALLBACK_HOSTS": "demo.example.test", "ALIPAY_ENV": "sandbox", "ALIPAY_APP_ID": "2026000000000000", "ALIPAY_SELLER_ID": "2088000000000000",
                                "ALIPAY_PRIVATE_KEY": pem(self.alipay_app), "ALIPAY_PUBLIC_KEY": public_pem(self.alipay_platform),
                                "WECHAT_CLIENT_FACTORY": lambda cfg: WechatClient(cfg, transport=self.wechat.transport)})
+        open_gates(self.pay)
         self.store, self.merchants = self.pay.extensions["store"], self.pay.extensions["merchants"]
         self.pay_client = self.pay.test_client()
         # the administrator enters the WeChat Pay parameters in the console

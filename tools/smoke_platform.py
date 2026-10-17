@@ -48,6 +48,10 @@ def run():
                           'ALIPAY_ENV': 'sandbox', 'ALIPAY_APP_ID': '2026000000000000', 'ALIPAY_SELLER_ID': '2088000000000000',
                           'ALIPAY_PRIVATE_KEY': key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()).decode(), 'ALIPAY_PUBLIC_KEY': public_pem(key),
                           'BYPAY_TRUST_PROXY': '0', 'FRONTEND_DIST': os.environ.get('BYPAY_SMOKE_DIST', str(ROOT / 'frontend/dist'))})
+        # 冒烟只验收界面与流程：商户准入和退款服务费按测试基线打开（真实默认值见 tests/support.py）
+        app.extensions['operations'].rules.save({'registration_review': False, 'registration_paid': False, 'deposit_enabled': False,
+                                                 'risk_enabled': False, 'domain_add': True, 'domain_enforce': False,
+                                                 'refund_fee_payer': 'platform', 'version': app.extensions['operations'].rules.read()['version']})
         store, ops = app.extensions['store'], app.extensions['operations']
         user = store.register('review@example.test', 'Review-password-123'); app.extensions['merchants'].ensure(user['id']); ops.ensure(user['id'])
         # three real settlement requests: money in the merchant's balance, a payout account, manual settlement on
@@ -112,9 +116,14 @@ def run():
                     const controls = [...card.querySelectorAll('.form-row:not(.stacked) .form-control > :is(.field, .unit-field, .form-switch)')].map(el => el.getBoundingClientRect())
                     return { right: box.right, gaps: controls.map(c => Math.round(box.right - c.right)), widths: controls.map(c => Math.round(c.width)) } })""")
                 check('controls share one right edge inside every card', all(len(set(g['gaps'])) <= 1 for g in geometry if g['gaps']), str(geometry))
+                check('the email domain allowlist starts with the four defaults', page.locator('#site-email_domains').locator('xpath=..').locator('.tag-chip').count() == 4)
+                page.locator('#site-callback_hosts').fill('https://demo.example.test/path?x=1'); page.locator('#site-callback_hosts').press('Enter')
+                check('a callback domain becomes a chip without scheme or path', page.locator('.tag-chip', has_text='demo.example.test').count() == 1 and page.locator('#site-callback_hosts').input_value() == '')
+                page.locator('.tag-chip', has_text='demo.example.test').get_by_role('button').click()
+                check('a chip can be removed with its cross', page.locator('.tag-chip', has_text='demo.example.test').count() == 0)
                 page.locator('#site-order_timeout_minutes').fill('20')
-                expect(bar).to_be_visible(); box = bar.bounding_box()
-                check('editing shows the save bar at the bottom edge of the screen', box['y'] + box['height'] >= 1050 - 2, str(box))
+                expect(bar).to_be_visible(); box = bar.bounding_box(); heading = page.locator('.console-page-heading').first.bounding_box()
+                check('editing shows 放弃修改 and 保存设置 at the right of the page heading', box['y'] >= heading['y'] - 2 and box['y'] + box['height'] <= heading['y'] + heading['height'] + 2 and box['x'] + box['width'] <= heading['x'] + heading['width'] + 2 and box['x'] > heading['x'] + heading['width'] / 2, str(box))
                 page.get_by_role('tab', name='人机验证').click(); page.get_by_role('tab', name='站点与订单').click()
                 check('a draft survives switching sections', page.locator('#site-order_timeout_minutes').input_value() == '20')
                 page.get_by_role('button', name='放弃修改').click()
@@ -159,9 +168,9 @@ def run():
                 page.get_by_label('平台服务费率', exact=True).fill('150'); page.get_by_role('button', name='保存平台规则', exact=True).click()
                 check('a value outside its limit is refused next to its field', page.locator('#policy-fee_rate-error').is_visible() and '100' in page.locator('#policy-fee_rate-error').inner_text())
                 page.get_by_label('平台服务费率', exact=True).fill('1.50')
-                page.get_by_label('开启注册审核', exact=True).check(); page.get_by_label('商品屏蔽关键词', exact=True).fill('BLOCKED_ITEM')
+                page.get_by_label('开启注册审核', exact=True).check(); page.get_by_label('商品屏蔽关键词', exact=True).fill('BLOCKED_ITEM'); page.get_by_label('商品屏蔽关键词', exact=True).press('Enter')
                 page.get_by_label('商品被屏蔽时显示内容', exact=True).fill('商品需人工确认'); page.get_by_role('button', name='保存平台规则', exact=True).click(); expect(page.get_by_text('平台规则已保存，新订单使用新规则', exact=True)).to_be_visible()
-                check('the policy is stored with the keyword list', ops.rules.read()['blocked_keywords'] == ['BLOCKED_ITEM'] and ops.rules.read()['registration_review'] is True)
+                check('the policy is stored with the keyword list', 'BLOCKED_ITEM' in ops.rules.read()['blocked_keywords'] and ops.rules.read()['registration_review'] is True)
                 page.screenshot(path=str(evidence / 'settings-policy.png'), full_page=True)
                 page.get_by_role('tab', name='人机验证').click(); page.get_by_label('Site Key', exact=True).fill('fixture-site'); page.get_by_label('Secret Key', exact=True).fill('fixture-secret')
                 page.get_by_label('允许验证的域名', exact=True).fill('localhost\n127.0.0.1'); page.get_by_role('button', name='保存配置', exact=True).click(); expect(page.get_by_text('Turnstile 配置已保存', exact=True)).to_be_visible()

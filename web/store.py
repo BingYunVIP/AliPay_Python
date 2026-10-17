@@ -53,7 +53,8 @@ class Store:
                     channel TEXT NOT NULL DEFAULT 'alipay', status TEXT NOT NULL DEFAULT 'CREATED',
                     pay_url TEXT NOT NULL, trade_no TEXT UNIQUE,
                     app_id TEXT NOT NULL, seller_id TEXT NOT NULL,
-                    created_at INTEGER NOT NULL, paid_at INTEGER, notify_url TEXT NOT NULL DEFAULT '');
+                    created_at INTEGER NOT NULL, paid_at INTEGER, notify_url TEXT NOT NULL DEFAULT '',
+                    client_ip TEXT NOT NULL DEFAULT '');
                 CREATE INDEX IF NOT EXISTS user_orders ON orders(user_id, created_at DESC);
                 CREATE TABLE IF NOT EXISTS events (
                     id INTEGER PRIMARY KEY, out_trade_no TEXT, accepted INTEGER NOT NULL,
@@ -105,7 +106,7 @@ class Store:
             order_columns = {row["name"] for row in db.execute("PRAGMA table_info(orders)")}
             if "channel_version" not in order_columns:
                 db.execute("ALTER TABLE orders ADD COLUMN channel_version INTEGER")
-            for name, definition in {"expires_at": "INTEGER", "payment_payload": "TEXT NOT NULL DEFAULT '{}'", "request_hash": "TEXT", "provider_notify_url": "TEXT", "provider_return_url": "TEXT", "payment_config_id": "INTEGER", "deleted_at": "INTEGER", "refunded_amount": "TEXT NOT NULL DEFAULT '0.00'", "provider_status": "TEXT NOT NULL DEFAULT ''", "cashier_qr": "TEXT NOT NULL DEFAULT ''", "active_refund_no": "TEXT"}.items():
+            for name, definition in {"client_ip": "TEXT NOT NULL DEFAULT ''", "expires_at": "INTEGER", "payment_payload": "TEXT NOT NULL DEFAULT '{}'", "request_hash": "TEXT", "provider_notify_url": "TEXT", "provider_return_url": "TEXT", "payment_config_id": "INTEGER", "deleted_at": "INTEGER", "refunded_amount": "TEXT NOT NULL DEFAULT '0.00'", "provider_status": "TEXT NOT NULL DEFAULT ''", "cashier_qr": "TEXT NOT NULL DEFAULT ''", "active_refund_no": "TEXT"}.items():
                 if name not in order_columns: db.execute(f"ALTER TABLE orders ADD COLUMN {name} {definition}")
             db.execute("UPDATE orders SET expires_at=created_at+900 WHERE expires_at IS NULL")
             now = int(time.time())
@@ -213,10 +214,10 @@ class Store:
             row = db.execute("SELECT o.* FROM short_links s JOIN orders o USING(out_trade_no) WHERE s.token=?", (token,)).fetchone()
             return dict(row) if row else None
 
-    def create_order(self, user_id, payload, pay_url, cfg, return_token=None, payment_payload=None, request_hash=None):
+    def create_order(self, user_id, payload, pay_url, cfg, return_token=None, payment_payload=None, request_hash=None, client_ip=""):
         with self.connect() as db:
-            db.execute("INSERT INTO orders(out_trade_no,user_id,subject,amount,product,channel,pay_url,app_id,seller_id,created_at,notify_url,channel_version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                       (payload["out_trade_no"], user_id, payload["subject"], payload["amount"], payload["product"], payload.get("channel", "alipay"), pay_url, cfg["app_id"], cfg["seller_id"], int(time.time()), payload.get("notify_url", ""), cfg.get("channel_version")))
+            db.execute("INSERT INTO orders(out_trade_no,user_id,subject,amount,product,channel,pay_url,app_id,seller_id,created_at,notify_url,channel_version,client_ip) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                       (payload["out_trade_no"], user_id, payload["subject"], payload["amount"], payload["product"], payload.get("channel", "alipay"), pay_url, cfg["app_id"], cfg["seller_id"], int(time.time()), payload.get("notify_url", ""), cfg.get("channel_version"), client_ip))
             db.execute("UPDATE orders SET expires_at=?,payment_payload=?,request_hash=? WHERE out_trade_no=?", (cfg.get("expires_at", int(time.time()) + 900), json.dumps(payment_payload or {}), request_hash, payload["out_trade_no"]))
             db.execute("UPDATE orders SET provider_notify_url=?,provider_return_url=? WHERE out_trade_no=?", (cfg.get("notify_url", ""), cfg.get("return_url", ""), payload["out_trade_no"]))
             db.execute("UPDATE orders SET payment_config_id=? WHERE out_trade_no=?", (cfg.get("payment_config_id"), payload["out_trade_no"]))
@@ -394,7 +395,8 @@ class Store:
             return {**dict(row), "attempts": row["attempts"] + 1}
 
     def finish_delivery(self, job, success, error=""):
-        delays = self.policy()["callback_retry_delays"]
+        # 固定间隔重试，最多 8 次，间隔来自“失败重试间隔”设置
+        delays = [self.policy()["callback_retry_interval_seconds"]] * 8
         status = "delivered" if success else "failed" if job["attempts"] > len(delays) else "pending"
         delay = delays[min(job["attempts"] - 1, len(delays) - 1)] if delays else 0
         with self.connect() as db:

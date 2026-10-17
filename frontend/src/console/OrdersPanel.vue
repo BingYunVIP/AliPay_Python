@@ -95,7 +95,7 @@ async function exportSelected() {
       <table class="console-table orders-table">
         <thead><tr>
           <th class="check-cell"><input type="checkbox" :aria-label="t('选择本页订单', 'Select orders on this page')" :checked="pageSelected" :indeterminate.prop="pageSome" @change="togglePage($event.target.checked)" /></th>
-          <th>{{ t('商户 ID / 邮箱', 'Merchant / Email') }}</th><th>{{ t('商品 / 订单号', 'Item / Order') }}</th><th>{{ t('渠道 / 产品', 'Channel / Product') }}</th><th>{{ t('实付金额', 'Amount') }}</th><th>{{ t('手续费', 'Fee') }}</th><th>{{ t('交易状态', 'Status') }}</th><th>{{ t('创建时间', 'Created at') }}</th><th>{{ t('支付时间', 'Paid at') }}</th><th class="align-right"><span class="action-head">{{ t('操作', 'Actions') }}</span></th>
+          <th>{{ t('商户 ID / 邮箱', 'Merchant / Email') }}</th><th>{{ t('商品 / 订单号', 'Item / Order') }}</th><th>{{ t('渠道 / 产品', 'Channel / Product') }}</th><th>{{ t('实付金额', 'Amount') }}</th><th>{{ t('手续费', 'Fee') }}</th><th>{{ t('交易状态', 'Status') }}</th><th>{{ t('创建时间', 'Created at') }}</th><th>{{ t('支付时间', 'Paid at') }}</th><th>{{ t('用户IP', 'Client IP') }}</th><th class="align-right"><span class="action-head">{{ t('操作', 'Actions') }}</span></th>
         </tr></thead>
         <tbody>
           <tr v-for="order in rows.data.value" :key="order.out_trade_no">
@@ -108,6 +108,7 @@ async function exportSelected() {
             <td><span class="state-badge" :class="order.status"><i></i>{{ status(order.status) }}</span></td>
             <td class="date-cell">{{ fullDate(order.created_at) }}</td>
             <td class="date-cell">{{ fullDate(order.paid_at) }}</td>
+            <td class="date-cell">{{ order.client_ip || '—' }}</td>
             <td class="align-right"><OrderActions :order="order" /></td>
           </tr>
         </tbody>
