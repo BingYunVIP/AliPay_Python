@@ -124,44 +124,65 @@ https://service.mail.qq.com/detail/0/75
 
 ## 8. 可发给 VPS Codex 的更新提示词
 
+提示词必须自包含：服务器上的代码可能比仓库旧，读不到新文档（首版提示词要求先读本文件，而服务器的代码早于加入本文件的提交 459897f，VPS Codex 因此暂停），所以所有命令、检查和期望值都写在提示词里
+
 ```text
-你是这台 Linux VPS 上的运维助手。请把冰云支付更新到 GitHub main 的最新提交，并更新独立测试站。我是小白：请你自己完成，每一步先说明再执行；遇到不确定的情况（目录不是 git 仓库、有本地改动、不能快进、Nginx 配置和预期不同）先停下来告诉我，不要猜。
+你是这台 Linux VPS 上的运维助手。请把冰云支付更新到 GitHub main 的最新提交，并更新独立测试站。
+这份提示词已经包含全部要求，不需要先读仓库里的任何文档（上一条要求你读 ByPay_项目规划.md 的说法作废：服务器上的代码比较旧，本来就没有这个文件，更新之后它会出现，可以作参考）。
+我是小白：请你自己完成，每一步先说明再执行；遇到不确定的情况（目录不是 git 仓库、有本地改动、不能快进、Nginx 配置和预期不同、任何命令报错）先停下来告诉我，不要猜。
 绝对不要在聊天里输出任何密钥、私钥、证书或数据库内容；管理员账号密码只在最后一步按要求提供。
 
 背景
-- 仓库 https://github.com/BingYunVIP/AliPay_Python.git ，分支 main；请先读 AGENTS.md、DEVELOPMENT_LOG.md 最后一节和 ByPay_项目规划.md 第 8、10、12 节
-- pay.bingyun.vip 是主站（systemd 服务 bypay，内部 127.0.0.1:888，Nginx 转发 HTTPS）；test.bingyun.vip 是独立测试站（Pay_Callback_Demo，用 run.sh 前台运行）
-- 这台机器上现有的 ByPay.sh 还没有“5）更新代码”菜单，所以这一次要手动更新；更新完成后，我以后可以在 ByPay.sh 菜单里选 5 自己更新
-- 不使用 Docker；除非下面明确要求，不要改 Nginx / Cloudflare；不要做真实付款、真实退款、真实出款；不要创建微信订单（会向微信发起真实请求）
+- 仓库：https://github.com/BingYunVIP/AliPay_Python.git ，分支 main
+- pay.bingyun.vip 是主站：systemd 服务 bypay（旧版本可能叫 bypay-web.service 和 bypay-callbacks.service），内部监听 127.0.0.1:888，Nginx 转发 HTTPS；主站目录应该是 /root/AliPay_Python（请用命令确认）
+- test.bingyun.vip 是独立测试站（Pay_Callback_Demo），用 run.sh 前台运行
+- 服务器上的代码比 GitHub main 旧了好几个提交。这次更新会一次带来：商户准入、邮件和结算、控制台改版、微信支付、测试站可选支付宝或微信支付、域名验证文件路由，以及 ByPay.sh 新增的“5）更新代码”菜单（旧的 ByPay.sh 没有，所以这一次要手动更新，以后我可以自己在菜单里选 5）
+- 数据库升级只新增表和列，不删除任何数据；所以更新前一定要备份并记录基线
+- 不使用 Docker；除非下面明确要求，不要改 Nginx / Cloudflare；不要做真实付款、真实退款、真实出款；不要创建微信订单，也不要点击“检查配置”（它们会真实联系微信）
 
 A. 只读检查（这一阶段不改任何东西）
-1. 找到主站目录：systemctl show bypay.service --property=WorkingDirectory --value；确认它是 AliPay_Python 的 git 仓库（git remote -v 指向上面的地址），记下更新前的提交号 git rev-parse HEAD
+1. 主站目录：systemctl show bypay.service --property=WorkingDirectory --value（没有就查 bypay-web.service）；确认它是 git 仓库（git remote -v 指向上面的地址），git branch --show-current 是 main（不是就停下来），记下更新前的提交号 git rev-parse HEAD；用 df -h 确认磁盘剩余空间足够（至少 1 GB）
 2. 找到测试站：ps -ef | grep -E 'serve.py|Pay_Callback_Demo'，用 readlink /proc/<进程号>/cwd 确认目录，并记下它是怎么启动的（tmux、screen、nohup 或 systemd），后面要用同样的方式重启
 3. 在主站目录运行 git status --short；如果有本地改动，先把 git diff 保存成补丁文件并告诉我，再继续，不要丢弃
-4. 记录更新前的基线（只记数字，用 sqlite3 或 python 只读查询）：用户数、订单数、已付订单数、channel_configs 数量，以及 systemctl is-active bypay
+4. 记录更新前的基线（只读，只记数字和哈希）。数据库文件是 .env 里 DATABASE 指定的文件（只读取这一行，不要显示 .env 的其他内容），通常是 <主站目录>/data/web.sqlite3。把路径填进下面的脚本运行，并记下输出：
+   python3 - <<'EOF'
+   import hashlib, sqlite3
+   path = "<数据库文件路径>"
+   db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+   rows = db.execute("SELECT id,email,password FROM users ORDER BY id").fetchall()
+   print("users", len(rows), hashlib.sha256(repr(rows).encode()).hexdigest()[:16])
+   print("orders", db.execute("SELECT COUNT(*) FROM orders").fetchone()[0], "paid", db.execute("SELECT COUNT(*) FROM orders WHERE paid_at IS NOT NULL").fetchone()[0])
+   print("integrity", db.execute("PRAGMA integrity_check").fetchone()[0])
+   EOF
+   同时记下 systemctl is-active bypay 的结果
 
 B. 更新主站（pay.bingyun.vip）
-5. git fetch origin main，然后 git merge --ff-only origin/main；不能快进就停下来报告，不要 reset --hard，不要强制
-6. 服务此时还在运行旧代码。立刻用新代码里的备份命令做备份：.venv/bin/python -m web.management backup（SQLite 在线备份、密钥和配置，放在 data/backups/update-*）；报告备份位置和里面的用户数、订单数
-7. 运行 printf '1\ny\n0\n' | ./ByPay.sh（菜单 1 部署，问是否创建并启用系统服务时回答 y）；它会安装依赖、构建网页并重启 bypay；保持内部监听 127.0.0.1:888 和现有 HTTPS 域名不变
-8. 验证：systemctl is-active bypay；curl -s http://127.0.0.1:888/health；PRAGMA integrity_check 为 ok；用户数、订单数、已付订单数、channel_configs 数量与第 4 步完全一致；journalctl -u bypay 没有错误；再运行 printf '3\n0\n' | ./ByPay.sh，确认“代码版本”是最新提交
-9. 如果部署失败：先把错误原因告诉我；只有在第 3 步确认没有本地改动时，才可以 git reset --hard 回到第 1 步记下的旧提交，再用第 7 步的命令重新部署，并核对数据与第 4 步一致；不要乱试其他办法
-10. 其余功能检查沿用前几轮：迁移只新增表和列、现有用户订单回调记录保留；账本总额与每笔分录平衡；worker 和计划任务正常；准入、保证金、返现、结算等开关保持默认关闭，不自动启用收费或资金动作；订单页、系统管理、系统日志、结算管理、账户中心都能打开且没有报错；如果服务器没有 QQ SMTP 授权码或 Turnstile Site Key / Secret，列出待我填写的字段，不要说成已验证
+5. git fetch origin，然后确认本地没有 GitHub 上没有的提交：git rev-list --count origin/main..HEAD 必须是 0（否则停下来报告）；再执行 git merge --ff-only origin/main；不能快进或被本地改动挡住，就停下来报告，不要 reset --hard，不要强制
+6. 服务此时还在运行旧代码。立刻用新代码里的备份命令做备份：在主站目录运行 .venv/bin/python -m web.management backup（SQLite 在线备份、密钥和配置，放在数据库所在目录的 backups/update-<时间>/）；它失败就停下来，不要继续部署；报告备份位置和里面的用户数、订单数
+7. 运行 printf '1\ny\n0\n' | ./ByPay.sh（菜单 1 部署，问是否创建并启用系统服务时回答 y）；它会安装依赖、构建网页、迁移数据库并重启 bypay；保持内部监听 127.0.0.1:888 和现有 HTTPS 域名不变；旧版本的 bypay-web / bypay-callbacks 服务会被自动停用，这是正常的
+8. 验证：systemctl is-active bypay；curl -s http://127.0.0.1:888/health；再运行第 4 步的脚本：integrity 必须是 ok，users 的数量和哈希必须与更新前完全一致，orders 和 paid 不能减少（更新期间如果有新订单，如实说明）；journalctl -u bypay -n 50 --no-pager 里没有错误；printf '3\n0\n' | ./ByPay.sh 里“代码版本”是最新提交；printf '5\n0\n' | ./ByPay.sh 应显示“已是最新版本”（这一步只会 git fetch，不会改动任何东西）
+9. 如果部署失败：先把完整错误告诉我，不要自己恢复数据库；只有在第 3 步确认没有本地改动时，才可以 git reset --hard 回到第 1 步记下的旧提交并用旧版 ByPay.sh 重新部署，然后重新运行第 4 步的脚本核对数据；不要乱试其他办法
+10. 功能检查（都是只读，不要点击任何会收钱、退款、出款的功能）：
+    - 账本：数据库里 SELECT COALESCE(SUM(cents),0) FROM ledger_lines 必须是 0，SELECT COUNT(*) FROM (SELECT event_id FROM ledger_lines GROUP BY event_id HAVING SUM(cents)!=0) 必须是 0；SELECT name, strftime('%Y-%m-%d %H:%M:%S', last_seen, 'unixepoch') FROM service_health 里的心跳时间（UTC）应在最近几分钟内；不要把历史已付订单补成可提现余额（本次更新不会自动做这件事，保持原样）
+    - 新增的准入、保证金、返现、结算、自动结算、注册审核、注册付费等开关保持默认关闭，不要启用；页面上默认注册费用 10 元、服务费率 1.5% 只是默认值，开关关闭时不会生效
+    - 用管理员登录后台，逐页确认能打开且没有报错：概览、订单（筛选、勾选、导出所选）、用户管理、收款渠道、系统管理的各个分区、系统日志、结算管理、账户中心、商户接口弹窗（V1 / V2）；有浏览器工具就用浏览器，没有就用已登录的 curl 请求对应接口确认都是 200
+    - 如果服务器还没有 QQ SMTP 授权码或 Cloudflare Turnstile 的 Site Key / Secret，列出待我填写的字段，不要说成已验证
+    - 如果启用了“代理 IP 来源”，检查 Nginx / Cloudflare 传来的真实来源头，配置准确的可信 CIDR，不能直接相信任意请求头
 
 C. 域名验证文件与微信
 11. curl -i https://pay.bingyun.vip/MP_verify_YIZThTeg958vnQzp.txt 必须是 200，内容正好是 YIZThTeg958vnQzp（16 字节，没有换行），Content-Type 是 text/plain；再测 http://pay.bingyun.vip/MP_verify_YIZThTeg958vnQzp.txt，如实告诉我是 200 还是 301/302（不要为此关闭全站 HTTPS 跳转，微信校验失败时再由我决定是否对这个文件单独放行）。如果被 Nginx 的静态规则（例如 location ~ \.txt$）拦住，改成转发给 Pay：先备份 Nginx 配置，nginx -t 通过后再 reload
 12. Nginx 必须把 / 下的所有路径（包括 /wechat/、/m/、/MP_verify_*.txt）转发给 Pay：检查现有 location / 是否已经覆盖，确有单独规则才改，改前备份并 nginx -t
 13. 系统管理 → 站点与订单 → 域名与通知里的站点地址必须是 https://pay.bingyun.vip（这是公开地址，不是密钥）：检查当前值，不是就在管理后台改成它并告诉我
-14. 微信 7 项参数不在线上数据库里（本机和 VPS 的数据库是分开的）：不要向我索要这些值，也不要让它们出现在聊天里；请列出我需要在线上控制台“收款渠道 → 微信支付 → 配置渠道”里填写的 7 个字段名。“检查配置”会真实联系微信，由我自己点击
+14. 微信 7 项参数不在线上数据库里（本机和 VPS 的数据库是分开的）：不要向我索要这些值，也不要让它们出现在聊天里；请确认线上控制台“收款渠道 → 微信支付 → 配置渠道”里有这 7 个字段：AppID、商户号、商户证书序列号、APIv3 密钥、商户私钥、微信支付公钥、微信支付公钥 ID，并告诉我每一项是“已填写”还是“未填写”（只说状态，不要读取或显示内容）。“检查配置”会真实联系微信，由我自己点击
 
 D. 更新测试站（test.bingyun.vip）
-15. 仓库里的 Pay_Callback_Demo.zip 已更新（测试站现在可以选择支付宝或微信支付）：先在仓库目录运行 sha256sum -c Pay_Callback_Demo.zip.sha256（应为 230a9abf26a7aad735ac6cbb9401ecf136d49c7572ab6755ae82670ed3de71b5）；解压到一个新的空目录（不要进入解压目录运行任何脚本）；测试站目录里只用解压出来的源码覆盖同名文件，绝不覆盖或删除 .env、data/、secrets/、.venv（环境、密钥和订单数据）；覆盖前后用 diff -rq 对比，确认只有这 7 个文件有差异：app.py、connection.py、static/app.js、static/index.html、static/style.css、tests/fixtures.py、tests/test_demo.py
+15. 仓库里的 Pay_Callback_Demo.zip 已更新（测试站现在可以选择支付宝或微信支付）：先在仓库目录运行 sha256sum -c Pay_Callback_Demo.zip.sha256（应为 230a9abf26a7aad735ac6cbb9401ecf136d49c7572ab6755ae82670ed3de71b5）；解压到一个新的空目录（不要进入解压目录运行任何脚本）；测试站目录里只用解压出来的源码覆盖同名文件，绝不覆盖或删除 .env、data/、secrets/、.venv（环境、密钥和订单数据）；覆盖前先用 diff -rq 对比，预期只有这 7 个文件有差异：app.py、connection.py、static/app.js、static/index.html、static/style.css、tests/fixtures.py、tests/test_demo.py；如果差异更多，先把列表告诉我，不要继续覆盖
 16. 停止旧的测试站进程，用启动它时的同样方式重新运行 ./run.sh；确认 https://test.bingyun.vip 页面出现“支付方式：支付宝 / 微信支付”，旧订单仍在列表里，商户 ID 和密钥保持原样；不要点“下单并打开收银台”
 17. 确认测试站里的接口地址是 https://pay.bingyun.vip，并且 Pay 的回调主机白名单（BYPAY_CALLBACK_HOSTS）包含 test.bingyun.vip
 
 E. 清理与汇报
 18. 运行 .venv/bin/python tools/cleanup.py 预览，再用 --apply 清理缓存；保留备份（update-* 最近 3 份）、数据库、密钥和当前日志，不要手工删除 data/logs，记录实际清理了什么
-19. 用中文给我最终报告：更新前后的 Git 提交号；每一步的检查结果；第 8 步的数据对比；/MP_verify 文件在 https 和 http 下的结果；还需要我做的事。并提供经过实际登录验证的 pay.bingyun.vip 管理员账号密码，以及普通测试商户账号和商户 ID（这是线上凭据，直接告诉我，不要写进任何文件）
+19. 用中文给我最终报告：更新前后的 Git 提交号；每一步的检查结果；第 8 步的数据对比；/MP_verify 文件在 https 和 http 下的结果；还需要我做的事。并提供经过实际登录验证的 pay.bingyun.vip 管理员账号密码，以及已有的普通测试商户账号和商户 ID（没有就如实说没有，不要擅自注册；这是线上凭据，直接告诉我，不要写进任何文件）
 ```
 
 ## 9. 控制台交互规则（2026-10-17）

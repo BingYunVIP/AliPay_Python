@@ -48,3 +48,4 @@ SMTP / Turnstile 真实验收需用户配置的外部凭据；没有自动出款
 - 微信 JS 安全域名等平台的验证文件（MP_verify_xxx.txt）放进仓库根目录的 verification/，从站点根路径原样提供：文件名限定为字母数字下划线连字符加 .txt，最大 1 KB，不跟随符号链接，不用重新构建；不要把别的文件放进该目录
 - ByPay.sh 菜单 5 更新代码（deploy/update.sh）：只允许 fast-forward；先备份数据库、密钥和配置（web.management backup，保留最近 3 份 update-*），再合并和部署，部署失败自动回到更新前的代码和网页文件并重启旧版本（reset 被拒绝时强制回退，代码回退失败也要把服务启动起来）；本机改动的程序文件需用户确认后另存为补丁，不会被静默覆盖；确认之后 Ctrl+C 被忽略、终端断开也走到头，输出经 tee 写入 data/update.log；update.sh 不依赖 set -e，部署放在子进程 bash 里执行，改动后运行 tests/test_update_script.py（含伪终端挂断测试）并对新增保护做变异检查
 - 不要在本机直接执行真实 deploy() 或菜单 5：它们会以 root 覆盖 /etc/systemd/system/bypay.service；本机部署用备份 → 构建 → systemctl restart bypay
+- 给 VPS Codex 的提示词必须自包含（ByPay_项目规划.md 第 8 节）：服务器上的代码可能比仓库旧，读不到新文档，所以所有命令、检查和期望值都写进提示词本身，不要让它先去读尚未更新到服务器的文件；写之前用 git log 核对服务器可能缺哪些提交
