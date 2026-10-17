@@ -327,10 +327,14 @@ VPS Codex 在第 5 步（快进合并）停下：服务器上的 DEVELOPMENT_LOG
 - 构建 frontend/dist 并 systemctl restart bypay：用户、订单、渠道配置摘要和已付数与部署前完全一致，integrity_check ok；web 进程的 BYPAY_QR_PREFETCH 为 1，worker 进程为 0（只读取这一个变量）；管理员登录后概览、渠道、诊断、事件、任务（ledger_balanced 为 true）、结算接口都是 200；验证文件 200、16 字节；真实浏览器登录后打开订单、渠道、设置页面没有错误（只有登录页询问会话时预期的一次 /api/auth/me 401）；journalctl 没有警告；没有创建订单
 - 清理：6 个 __pycache__ 目录（1539210 字节，记录在 data/maintenance/cleanup-20261017T084608Z.json）；删除早于最近两代的备份 pre-wechat-admin-20261017T050855（记录在 data/maintenance/backup-cleanup-20261017T084634.json），保留 update-20261017T052146Z 和 update-20261017T084410Z；/tmp 下的构建目录、冒烟产物、基准和变异检查脚本；data/logs 与 data/local/logs 没有手工修剪
 
+### VPS 实测（2026-10-17，以下来自 VPS Codex 的汇报，我没有直接访问 VPS）
+
+- VPS 已按第 8 节提示词更新到本轮提交并通过验证；用户随后在 test.bingyun.vip 连续下了 3 笔支付宝网页订单，只下单不付款（Pay 订单 CREATED，测试站 WAITING，没有资金往来）
+- 事件日志里三笔的 cashier_qr_ready：fetched_by 都是 prefetch，waited 都是 false，hops 都是 3；elapsed_ms 分别是 5135、4267、1174 毫秒——第 2 笔比第 1 笔快约 0.9 秒，第 3 笔快约 4 秒，即冷连接 5.1 秒、连接热起来后 1.2 秒
+- 最近 15 分钟没有 qr_prefetch_failed、qr_warm_failed、cashier_qr_unavailable，所以预取在真实网络上没有带来新的失败
+- 诚实边界：这是服务端取到二维码的耗时，不是浏览器里二维码出现的精确时间；没有同一环境下“更新前”的毫秒数字可比（旧订单事件只精确到秒），所以不给提升比例；3 笔样本不足以证明每次都稳定变快；保温窗口是最近一次网页支付订单后的 10 分钟，所以空闲后的第一笔必然是冷连接，偏慢是预期的
+
 ### 发布与剩余验收
 
-已本机验证并部署；已提交并推送到 origin/main（提交号以 git log 为准）；VPS 尚未更新本轮：按 ByPay_项目规划.md 第 8 节的提示词，由 VPS Codex 用菜单 5 更新主站（测试站本轮没有改动）；真实付款已验收（支付宝、微信支付，由用户报告）；支付宝二维码提速的真实耗时还没有在 VPS 上测量，上面的数字是本机估计和进程内替身的对比
-你需要做的验收：
-1. 把第 8 节提示词交给 VPS Codex，等它报告更新结果
-2. 它报告后，打开 https://test.bingyun.vip，选择支付宝，点“下单并打开收银台”，连续下 2 单（不用付款），看二维码出现得是否比以前快；再回复“已下单”，让它读取事件日志对比耗时（fetched_by 为 prefetch 的 cashier_qr_ready，elapsed_ms 就是下单到取到二维码的时间）
-3. 如果支付宝页面出错变多，在主站 .env 里加一行 BYPAY_QR_PREFETCH=0 再重启 bypay，就回到“打开收银台时才取”
+已本机验证并部署；已提交并推送到 origin/main（提交号以 git log 为准）；VPS 已执行本轮更新并完成上面的实测（由 VPS Codex 执行和汇报）；真实付款已验收（支付宝、微信支付，由用户报告）
+仍待观察：浏览器里“点击下单到二维码出现”的逐笔真实时间，以及更多订单下的稳定性；若支付宝侧出错变多，在主站 .env 里加一行 BYPAY_QR_PREFETCH=0 再重启 bypay，即回到“打开收银台时才取”
