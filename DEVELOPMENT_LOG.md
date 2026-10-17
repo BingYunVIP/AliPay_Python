@@ -338,3 +338,46 @@ VPS Codex 在第 5 步（快进合并）停下：服务器上的 DEVELOPMENT_LOG
 
 已本机验证并部署；已提交并推送到 origin/main（提交号以 git log 为准）；VPS 已执行本轮更新并完成上面的实测（由 VPS Codex 执行和汇报）；真实付款已验收（支付宝、微信支付，由用户报告）
 仍待观察：浏览器里“点击下单到二维码出现”的逐笔真实时间，以及更多订单下的稳定性；若支付宝侧出错变多，在主站 .env 里加一行 BYPAY_QR_PREFETCH=0 再重启 bypay，即回到“打开收银台时才取”
+
+## 2026-10-18 · 渠道卡片与商户管理统一模板（用户逐项验收）
+
+### 问题与验收目标
+
+用户逐项指出控制台与商户管理的 13 处问题：正式环境徽章位置与显示条件不一致、渠道卡片操作区各渠道模板不统一、新增用户表单过于简单（需参考 Epay admin/uset.php?my=add）、审核备注要带实时保证金余额并留痕、商户接口页布局与多余文案、订单表与用户表缺列、系统管理里的支付配置检查与 QQ 邮箱默认值属于多余内容
+目标：只改 Test/AliPay_Python；渠道卡片、商户新增、列表列位统一为一套模板；手续费与保证金规则可后台调整；改完按分析 → 规划 → 逐步改码 → 冒烟 → 文档 → 部署 → 提交的流程交付
+
+### 已核对参考
+
+- Epay/admin/uset.php?my=add：手机号/邮箱登录账号、登录密码、网站域名、功能开关（手续费扣除模式、商户状态、支付权限、结算权限）的字段顺序与语义
+- Epay 商户域名与回调白名单：域名只存主机名，回调白名单决定是否允许向该域名发通知
+- 现有 web/operations.py 的 ledger_lines 记账与 merchant_access 准入模型：保证金余额必须走只追加分录，不能直接改字段
+- 现有 web/platform_rules.py 的费率/最低手续费语义（fee_threshold 与 fee_minimum 组合）
+
+### 计划
+
+1. 平台规则默认值：手续费 1.5%、最低 0.01 元、保证金门槛 10 元、每商户网站域名数量 1（后台可改）
+2. 商户模型：merchant_access 增加支付权限；保证金由管理员登记时写入一条平衡分录；新增商户支持域名、白名单、状态、支付权限、保证金
+3. 接口：用户列表补累计收款/成功率/保证金/域名，订单列表补商户 ID/邮箱与手续费，渠道检查覆盖全部渠道，审核日志写入实时保证金余额
+4. 前端：渠道卡片统一模板；新增商户弹窗；用户表与订单表列位；商户接口页等距布局；删除支付配置检查与 QQ 邮箱文案
+5. 冒烟（单测 + 四套浏览器冒烟）→ 更新文档 → 本机备份、构建、重启 → 提交
+
+### 状态
+
+实现、本机测试与本机部署完成；提交由 Git 记录标识
+
+### 已实现
+
+- web/platform_rules.py：fee_rate 1.50 / fee_threshold 0.01 / fee_minimum 0.01（不足最低按 0.01 收，金额 ≤ 0.66 元时每笔 0.01 元）；deposit_minimum 10.00；新增 merchant_domain_limit（1–10，默认 1）
+- web/operations.py：merchant_access 增加 pay_enabled（存量库 ALTER 迁移）；支付权限关闭时 precheck 返回 merchant_pay_disabled；新增 deposit_balance 与 credit_deposit（只追加一条 clearing/deposit 平衡分录，reference 幂等）
+- web/console.py：新增用户接受 domains（自动去掉协议、端口与路径，只留主机名）、callback_whitelist（approved / pending）、disabled、pay_enabled、deposit；保证金低于门槛时服务端也默认停用；新增 /api/admin/users/<id>/pay-access 与 /api/admin/users/<id>/deposit；用户列表补 paid_count、deposit_cents、domains；订单列表关联 users/merchant_accounts/financial_orders 补 merchant_email、merchant_id、fee_cents
+- web/app.py：/api/admin/channel-configs/<id>/check 对没有在线探针的渠道按已保存且已校验的配置回答（provider_code=stored_configuration），微信仍走在线查单
+- web/platform_api.py：审核时把实时保证金余额写进 trace（merchant.review 的 deposit_balance）
+- frontend：ChannelsPanel 统一卡片模板（正式环境/沙箱徽章在标题右侧，配置不完整或最近检查失败时不显示；已配置显示密钥加密保存 + 修改配置 + 检查配置 + 测试支付；未配置只保留右侧配置渠道）；UsersPanel 新增商户弹窗（邮箱、密码、网站域名可加多个且可点击、回调白名单、商户状态、支付权限、保证金余额，并提示手续费与门槛）、累计收款与成功率/订单数两列、审核备注默认“商户保证金余额：xxx”；OrdersPanel 增加商户 ID/邮箱与手续费列；KeysPanel 接口地址/商户 ID 与签名方式同一行等距，删除 V1/V2 卡片标题、私钥说明与 mapi.php 行；SiteSettings 删除支付配置检查分组；MailSettings 删除 QQ 邮箱默认值说明
+- 后台可改：系统管理 → 商户与资金规则里的商户服务费率、最低扣除金额、保证金最低充值金额，以及商品与域名里的每商户网站域名数量
+
+### 测试与本机验证
+
+- 单元测试 314 项通过（tests/test_wechat.py 的渠道检查断言更新为新契约：任何渠道都返回 200，无在线探针的渠道 authenticated == verified 且不创建订单）
+- 四套真实浏览器冒烟 0 失败：smoke_ui（表头新增商户/手续费列、商户列与手续费列有值、导出仍只含所选订单）、smoke_platform 62 项、smoke_wechat 29 项；构建到 /tmp/bypay-dist 后用 BYPAY_SMOKE_DIST 指向，不覆盖 frontend/dist
+- 手续费算法核对：0.66 元 → 0.99 分取整为 0.01 元；0.67 元 → 1.005 分取整为 0.01 元；1.00 元 → 1.5 分取整为 0.02 元；0.01 元触发最低 0.01 元
+- 没有真实付款、退款，没有联系支付宝或微信

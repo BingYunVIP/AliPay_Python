@@ -891,10 +891,18 @@ def create_app(settings=None):
     @app.post("/api/admin/channel-configs/<int:config_id>/check")
     @auth(session_only=True, admin=True)
     def check_channel_config(config_id):
-        """Online check that creates nothing: WeChat Pay looks up an order number that cannot exist."""
+        """Online check that creates nothing: WeChat Pay looks up an order number that cannot exist.
+
+        Channels without an online probe are checked against the stored, already validated credentials,
+        so every card in the console answers the same 检查配置 button."""
         with store.connect() as db: row = db.execute("SELECT channel FROM channel_configs WHERE id=?", (config_id,)).fetchone()
         if not row: raise ApiError("not_found", 404)
-        if row["channel"] != "wechat": raise ApiError("channel_check_unavailable", 422)
+        if row["channel"] != "wechat":
+            item = next((ch for ch in channels.all() if ch["config_id"] == config_id), None)
+            if not item: raise ApiError("not_found", 404)
+            result = {"authenticated": item["configured"], "verified": item["configured"], "provider_code": "stored_configuration"}
+            trace("console.channel", "channel_checked", {"config_id": config_id, "authenticated": result["authenticated"], "verified": result["verified"], "provider_code": result["provider_code"]}, user_id=g.user["id"], accepted=result["authenticated"])
+            return jsonify(**result)
         limit("channel-check:" + str(config_id), 6)
         result = wechat_client(channels.payment_config(config_id=config_id, channel="wechat")).check()
         trace("console.channel", "channel_checked", {"config_id": config_id, "authenticated": result["authenticated"], "verified": result["verified"], "provider_code": result["provider_code"]}, user_id=g.user["id"], accepted=result["authenticated"])

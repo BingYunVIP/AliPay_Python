@@ -162,8 +162,10 @@ def install_platform(app,auth,create_payment,ApiError,same_origin):
             row=db.execute('SELECT role,email FROM users WHERE id=?',(user,)).fetchone()
             if not row or row['role']=='admin':raise ApiError('admin_protected',403)
             db.execute('UPDATE merchant_access SET review=?,review_note=? WHERE user_id=?',(status,note,user))
+            deposit=amount(ops.balance(db,user,'deposit'))
             mailer.enqueue('reminder',row['email'],{'message':'商户审核'+('已通过' if status=='approved' else '未通过')+' '+note},'review:'+str(user)+':'+str(time.time_ns()),db=db)
-        trace('merchant.review','merchant_'+status,{'target_user':user,'note':note},user_id=g.user['id']);return jsonify(ok=True)
+        # 审核备注与当时实时读取的保证金余额一起留痕
+        trace('merchant.review','merchant_'+status,{'target_user':user,'note':note,'deposit_balance':deposit},user_id=g.user['id']);return jsonify(ok=True)
 
     @app.post('/api/admin/users/<int:user>/risk-release')
     @auth(session_only=True,admin=True)

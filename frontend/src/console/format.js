@@ -64,6 +64,8 @@ const messages = {
   user_created: ['已创建普通用户', 'User created'],
   user_disabled: ['已停用用户并撤销密钥', 'User disabled and API key revoked'],
   user_enabled: ['已恢复用户访问', 'User access restored'],
+  user_pay_enabled: ['已开启商户支付权限', 'Merchant payment permission enabled'],
+  user_pay_disabled: ['已关闭商户支付权限', 'Merchant payment permission disabled'],
   channel_config_saved: ['渠道配置已加密保存', 'Channel configuration encrypted and saved'],
   channel_checked: ['已在线检查渠道配置', 'Channel configuration checked online'],
   wechat_query_requested: ['正在查询微信支付订单', 'Query sent to WeChat Pay'],

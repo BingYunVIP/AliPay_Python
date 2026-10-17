@@ -20,6 +20,7 @@ const lines = (key, label, hint) => ({ key, type: 'list', label, hint })
 const groups = [
   { title: ['注册准入', 'Registration'], fields: [bool('registration_review', ['开启注册审核', 'Review new merchants']), bool('registration_paid', ['开启注册付费', 'Charge a registration fee']), money('registration_fee', ['注册费用', 'Registration fee'])] },
   { title: ['商品与域名', 'Items & domains'], fields: [lines('blocked_keywords', ['商品屏蔽关键词', 'Blocked item keywords'], ['每行一个', 'One per line']), { key: 'blocked_message', type: 'text', label: ['商品被屏蔽时显示内容', 'Message for blocked items'] },
+    count('merchant_domain_limit', ['每个商户可填写的网站域名数量', 'Site domains per merchant'], ['个', 'domains'], [1, 10]),
     bool('domain_add', ['允许商户申请授权支付域名', 'Merchants may request payment domains']), bool('domain_enforce', ['禁止未授权支付域名下单', 'Block orders from unauthorised domains'])] },
   { title: ['手续费与退款', 'Fees & refunds'], note: ['新费用规则对新订单生效，已有订单保留原规则', 'New fee rules apply to new orders; existing orders keep theirs'], fields: [rate('fee_rate', ['平台服务费率', 'Platform fee rate']), money('fee_threshold', ['手续费低于此金额时触发最低扣除', 'Minimum fee applies below']), money('fee_minimum', ['最低扣除金额', 'Minimum fee']),
     bool('merchant_refund', ['开启商户后台自助退款', 'Allow merchant self-service refunds']),

@@ -557,7 +557,12 @@ class WechatConfigurationTests(WechatCase):
         self.assertEqual((good.status_code, good.json["authenticated"], good.json["verified"]), (200, True, True))
         self.assertEqual(self.fake.orders, {})
         self.assertEqual(self.client.post(url, headers=self.headers).status_code, 403)
-        self.assertEqual(self.admin.post("/api/admin/channel-configs/1/check", headers=self.admin_headers).status_code, 422)
+        # 每个渠道都能回答“检查配置”：没有在线探针的渠道按已保存且已校验的配置回答
+        stored = self.admin.post("/api/admin/channel-configs/1/check", headers=self.admin_headers)
+        self.assertEqual(stored.status_code, 200)
+        self.assertEqual(stored.json["provider_code"], "stored_configuration")
+        self.assertEqual(stored.json["authenticated"], stored.json["verified"])
+        self.assertEqual(self.fake.orders, {})
         self.save_config(merchant_private_key=FakeWechat().config()["merchant_private_key"])
         bad = self.admin.post(url, headers=self.admin_headers)
         self.assertEqual((bad.json["authenticated"], bad.json["code"]), (False, "wechat_sign_error"))

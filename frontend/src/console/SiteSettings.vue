@@ -1,15 +1,13 @@
 <script setup>
-import { computed, inject, nextTick, onMounted, ref, watch } from 'vue'
+import { inject, nextTick, ref, watch } from 'vue'
 import { api, errorText, t } from '../state'
 import { fromWords, toLines, useDraft } from './useDraft'
-import Icon from '../components/Icon.vue'
-import Brand from '../components/Brand.vue'
 import FormGroup from './FormGroup.vue'
 import FormRow from './FormRow.vue'
 import SaveBar from './SaveBar.vue'
 const c = inject('console')
 const { draft, dirty, load } = useDraft()
-const version = ref(0), busy = ref(false), error = ref(null), diagnostics = ref(null), checking = ref(false)
+const version = ref(0), busy = ref(false), error = ref(null)
 c.guard(() => dirty.value)
 
 const read = value => ({
@@ -48,31 +46,10 @@ async function save() {
   if (error.value?.field) { await nextTick(); document.getElementById(`site-${error.value.field}`)?.focus() }
 }
 
-const fieldNames = computed(() => ({ app_id: 'APP ID', seller_id: t('收款方 UID', 'Seller UID'), app_private_key: t('应用私钥', 'App private key'), alipay_public_key: t('支付宝公钥', 'Alipay public key'), mch_id: t('商户号', 'Merchant number'),
-  certificate_serial: t('证书序列号', 'Certificate serial'), api_v3_key: t('APIv3 密钥', 'APIv3 key'), merchant_private_key: t('商户私钥', 'Merchant private key'), platform_public_key: t('微信支付公钥', 'WeChat Pay public key'), platform_public_key_id: t('微信支付公钥 ID', 'WeChat Pay public key ID') }))
-// One line per saved payment configuration, with what is still missing
-const configurations = computed(() => (diagnostics.value?.configurations || []).map(item => ({ ...item, missing: item.checks.filter(check => !check.ok).map(check => fieldNames.value[check.name] || check.name) })))
-async function check() {
-  checking.value = true
-  try { diagnostics.value = await api('/api/admin/diagnostics') }
-  catch (e) { c.report(e) }
-  finally { checking.value = false }
-}
-onMounted(check)
 </script>
 <template>
   <form class="settings-form" novalidate @submit.prevent="save">
     <div class="form-groups">
-      <FormGroup :title="t('支付配置检查', 'Payment configurations')" :note="t('付款结果始终经过验签与订单校验', 'Payments always require signature and order verification')">
-        <template #action><button type="button" class="icon-button" :disabled="checking" :aria-label="t('重新检查配置', 'Run configuration checks')" @click="check"><Icon name="refresh" :class="{ spin: checking }" :size="16" /></button></template>
-        <div v-for="item in configurations" :key="item.config_id" class="status-row">
-          <span class="brand-small" :class="item.id"><Brand :name="item.id" /></span>
-          <span class="status-text"><b>{{ item.name }}</b><small v-if="item.missing.length">{{ t('缺少：', 'Missing: ') }}{{ item.missing.join(t('、', ', ')) }}</small></span>
-          <span class="state-badge" :class="item.configured ? 'ok' : 'wait'"><i></i>{{ item.configured ? t('已配置', 'Configured') : t('待配置', 'Needs setup') }}</span>
-        </div>
-        <p v-if="!configurations.length" class="status-row"><span class="status-text"><small>{{ checking ? t('正在检查…', 'Checking…') : t('暂无渠道配置', 'No payment configurations') }}</small></span></p>
-      </FormGroup>
-
       <FormGroup :title="t('访问与交易', 'Access & payments')">
         <FormRow field="site-registration" :label="t('开放用户注册', 'Allow registration')" :hint="t('允许新用户创建普通账户', 'Allow new users to create accounts')"><input id="site-registration" name="registration" v-model="draft.registration" type="checkbox" role="switch" class="form-switch" :disabled="busy" /></FormRow>
         <FormRow field="site-max_amount" :label="t('单笔测试金额上限', 'Maximum test amount')" :hint="`${t('不能超过服务器额度', 'Server ceiling')} ¥ ${c.settings.value?.amount_ceiling || '3000.00'}`" :error="message('max_amount')">

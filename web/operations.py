@@ -44,6 +44,8 @@ class Operations:
           CREATE TABLE IF NOT EXISTS payment_attempts(number TEXT PRIMARY KEY,user_id INTEGER NOT NULL,ip TEXT NOT NULL,created_at INTEGER NOT NULL);
         ''')
         with store.connect() as db:
+            access_columns={row['name'] for row in db.execute('PRAGMA table_info(merchant_access)')}
+            if 'pay_enabled' not in access_columns:db.execute('ALTER TABLE merchant_access ADD COLUMN pay_enabled INTEGER NOT NULL DEFAULT 1')
             for row in db.execute('SELECT id FROM users').fetchall():self.ensure(row['id'],db)
         store.operations=self
 
@@ -71,6 +73,7 @@ class Operations:
         state=self.ensure(user);rules=self.rules.read()
         with self.store.connect() as db:deposit=self.balance(db,user,'deposit')
         return {**state,'registration_fee':amount(state['fee_due']),'registration_paid':state['fee_paid']>=state['fee_due'],
+                'pay_enabled':bool(state['pay_enabled']),
                 'deposit_balance':amount(deposit),'deposit_required':rules['deposit_enabled'],'deposit_minimum':rules['deposit_minimum'],
                 'deposit_freeze_days':rules['deposit_freeze_days'],'ready':state['review']=='approved' and state['fee_paid']>=state['fee_due'] and not state['risk_hold'] and (not rules['deposit_enabled'] or deposit>=cents(rules['deposit_minimum']))}
 
@@ -80,6 +83,7 @@ class Operations:
             if state['review']!='approved':raise ValueError('registration_review_required')
             if state['fee_paid']<state['fee_due']:raise ValueError('registration_payment_required')
             if state['risk_hold']:raise ValueError('merchant_risk_hold')
+            if not state['pay_enabled']:raise ValueError('merchant_pay_disabled')
             if rules['deposit_enabled']:
                 with self.store.connect() as db:
                     if self.balance(db,user,'deposit')<cents(rules['deposit_minimum']):raise ValueError('deposit_required')
@@ -111,6 +115,17 @@ class Operations:
 
     @staticmethod
     def balance(db,user,account):return -db.execute('SELECT COALESCE(SUM(cents),0) FROM ledger_lines WHERE user_id=? AND account=?',(user,account)).fetchone()[0]
+
+    def deposit_balance(self,user):
+        with self.store.connect() as db:return self.balance(db,user,'deposit')
+
+    def credit_deposit(self,user,value,reference):
+        """管理员登记商户保证金：只追加一条平衡分录，不改历史分录。"""
+        if value<=0:return 0
+        with self.store.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            self.journal(db,'admin-deposit:'+reference,'deposit_adjust',reference,user,[('clearing',0,value),('deposit',user,-value)])
+        return value
 
     def journal(self,db,key,kind,reference,user,lines):
         if db.execute('SELECT 1 FROM ledger_events WHERE id=?',(key,)).fetchone():return False

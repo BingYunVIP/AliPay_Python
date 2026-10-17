@@ -88,13 +88,13 @@ onBeforeUnmount(() => { disposed = true; clearTimeout(timer) })
     <p v-if="loadError" class="error-box" role="alert">{{ loadError }}</p>
     <form class="settings-form" @submit.prevent="saveSmtp">
       <div class="form-groups">
-        <FormGroup :title="t('邮箱服务', 'Email service')" :note="t('QQ 邮箱默认 smtp.qq.com · 465 · SSL/TLS，使用邮箱设置中的 SMTP 授权码', 'QQ Mail defaults to smtp.qq.com · 465 · SSL/TLS and uses the SMTP authorization code from its settings')">
+        <FormGroup :title="t('邮箱服务', 'Email service')">
           <FormRow field="mail-enabled" :label="t('启用邮件服务', 'Enable email')"><input id="mail-enabled" name="enabled" v-model="draft.enabled" type="checkbox" role="switch" class="form-switch" :disabled="smtpBusy" /></FormRow>
           <FormRow field="mail-host" :label="t('SMTP 服务器', 'SMTP server')"><input id="mail-host" name="host" v-model="draft.host" class="field" placeholder="smtp.qq.com" autocomplete="off" spellcheck="false" required :disabled="smtpBusy" /></FormRow>
           <FormRow field="mail-port" :label="t('端口', 'Port')"><input id="mail-port" name="port" v-model.number="draft.port" class="field" type="number" min="1" max="65535" required :disabled="smtpBusy" /></FormRow>
           <FormRow field="mail-security" :label="t('连接加密', 'Encryption')"><select id="mail-security" name="security" v-model="draft.security" class="field" :disabled="smtpBusy"><option value="ssl">SSL / TLS</option><option value="starttls">STARTTLS</option></select></FormRow>
           <FormRow field="mail-username" :label="t('SMTP 账号', 'SMTP account')"><input id="mail-username" name="username" v-model="draft.username" class="field" autocomplete="off" spellcheck="false" placeholder="your@qq.com" :disabled="smtpBusy" /></FormRow>
-          <FormRow field="mail-password" :label="t('SMTP 授权码', 'SMTP authorization code')"><input id="mail-password" name="password" v-model="draft.password" class="field" type="password" autocomplete="new-password" :placeholder="passwordSaved ? t('已保存，留空不修改', 'Saved — leave blank to keep') : t('QQ 邮箱授权码', 'Authorization code')" :disabled="smtpBusy" /></FormRow>
+          <FormRow field="mail-password" :label="t('SMTP 授权码', 'SMTP authorization code')"><input id="mail-password" name="password" v-model="draft.password" class="field" type="password" autocomplete="new-password" :placeholder="passwordSaved ? t('已保存，留空不修改', 'Saved — leave blank to keep') : t('SMTP 授权码或密码', 'SMTP authorization code or password')" :disabled="smtpBusy" /></FormRow>
           <FormRow field="mail-sender" :label="t('发件邮箱', 'Sender address')"><input id="mail-sender" name="sender" v-model="draft.sender" class="field" type="email" autocomplete="off" spellcheck="false" placeholder="your@qq.com" :disabled="smtpBusy" /></FormRow>
           <FormRow field="mail-sender_name" :label="t('发件名称', 'Sender name')"><input id="mail-sender_name" name="sender_name" v-model="draft.sender_name" class="field" autocomplete="off" :disabled="smtpBusy" /></FormRow>
         </FormGroup>

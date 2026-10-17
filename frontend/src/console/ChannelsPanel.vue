@@ -48,13 +48,25 @@ const schemas = computed(() => ({
 }))
 const editorFields = computed(() => editing.value ? schemas.value[editing.value.id] : [])
 const checking = ref(0), checks = reactive({})
+// 正式环境徽章只在“配置完整且最近一次检查没有失败”时出现
+function environment(channel) {
+  if (!channel.configured || checks[channel.config_id]?.ok === false) return null
+  const env = channel.fields.env || 'production'
+  return env === 'production' ? { tone: 'production', label: t('正式环境', 'Production') } : { tone: 'neutral', label: t('沙箱环境', 'Sandbox') }
+}
+function checkResult(channel, result) {
+  if (channel.id !== 'wechat') return result.authenticated
+    ? { ok: true, text: t('配置完整，密钥格式校验通过', 'Configuration complete and key formats verified') }
+    : { ok: false, text: t('配置不完整，请补全必填参数后再检查', 'Configuration is incomplete — fill in every required field') }
+  if (!result.authenticated) return { ok: false, text: errorText(new Error(result.code || 'payment_provider_error')) }
+  if (result.verified === true) return { ok: true, text: t('商户号、证书序列号、商户私钥和微信支付公钥均验证通过', 'Merchant number, certificate serial, private key and WeChat Pay public key all verified') }
+  if (result.verified === false) return { ok: false, text: t('商户信息正确，但微信支付公钥或公钥 ID 不对，请重新下载公钥', 'Merchant details are right, but the WeChat Pay public key or its ID is wrong — download the public key again') }
+  return { ok: true, text: t('商户信息正确；微信支付没有返回签名，暂时无法确认公钥', 'Merchant details are right; WeChat Pay sent no signature, so the public key could not be confirmed') }
+}
 async function check(channel) {
   checking.value = channel.config_id; delete checks[channel.config_id]
   try {
-    const r = await api(`/api/admin/channel-configs/${channel.config_id}/check`, { method: 'POST' })
-    checks[channel.config_id] = r.authenticated
-      ? { ok: r.verified === true, text: r.verified === true ? t('商户号、证书序列号、商户私钥和微信支付公钥均验证通过', 'Merchant number, certificate serial, private key and WeChat Pay public key all verified') : r.verified === false ? t('商户信息正确，但微信支付公钥或公钥 ID 不对，请重新下载公钥', 'Merchant details are right, but the WeChat Pay public key or its ID is wrong — download the public key again') : t('商户信息正确；微信支付没有返回签名，暂时无法确认公钥', 'Merchant details are right; WeChat Pay sent no signature, so the public key could not be confirmed') }
-      : { ok: false, text: errorText(new Error(r.code)) }
+    checks[channel.config_id] = checkResult(channel, await api(`/api/admin/channel-configs/${channel.config_id}/check`, { method: 'POST' }))
   } catch (e) { checks[channel.config_id] = { ok: false, text: errorText(e) } }
   finally { checking.value = 0 }
 }
@@ -115,9 +127,10 @@ onBeforeUnmount(() => { disposed = true; Object.keys(fields).forEach(key => dele
   <div class="console-page-heading"><div><h2>{{ t('收款渠道', 'Payment channels') }}</h2><p>{{ t('配置商户参数与密钥，管理收款入口', 'Configure merchant credentials and payment availability') }}</p></div><button class="button button-secondary" @click="addConfig"><Icon name="plus" :size="16" />{{ t('添加配置', 'Add configuration') }}</button></div>
   <p v-if="loadError" class="error-box" role="alert">{{ loadError }}</p>
   <div class="channel-card-grid" :aria-busy="loading"><article v-for="ch in channels" :key="ch.config_id" class="hig-card payment-channel-card">
-    <div class="channel-card-top"><span class="channel-mark" :class="ch.id"><Brand :name="ch.id" /></span><div class="channel-card-title"><h3>{{ ch.name }}</h3></div><button class="hig-switch" role="switch" :aria-checked="ch.enabled" :aria-label="`${t('启用配置', 'Enable configuration')} ${ch.name}`" @click="confirming = ch; error = ''"><span></span></button></div>
+    <div class="channel-card-top"><span class="channel-mark" :class="ch.id"><Brand :name="ch.id" /></span><div class="channel-card-title"><h3>{{ ch.name }}</h3><span v-if="environment(ch)" class="state-badge" :class="environment(ch).tone">{{ environment(ch).label }}</span></div><button class="hig-switch" role="switch" :aria-checked="ch.enabled" :aria-label="`${t('启用配置', 'Enable configuration')} ${ch.name}`" @click="confirming = ch; error = ''"><span></span></button></div>
     <div class="channel-meta"><div><span>{{ t('参数状态', 'Configuration') }}</span><b :class="ch.configured ? 'text-green' : 'muted'">{{ ch.configured ? t('已配置', 'Configured') : ch.version ? t('部分已保存', 'Partially saved') : t('待配置', 'Not configured') }}</b></div><div><span>{{ ch.integrated ? t('单笔测试上限', 'Test limit') : t('支付接口', 'Payment adapter') }}</span><b>{{ ch.integrated ? `¥ ${c.caps.value?.max_amount || '—'}` : t('尚未接入', 'Not integrated') }}</b></div><div><span>{{ ch.identifierLabel }}</span><code :title="ch.fields[ch.identifier]">{{ ch.fields[ch.identifier] || '—' }}</code></div></div>
-    <div class="channel-card-actions"><span v-if="ch.id === 'alipay' || ch.id === 'paypal'" class="state-badge" :class="ch.fields.env === 'production' ? 'production' : 'neutral'">{{ ch.fields.env === 'production' ? t('正式环境', 'Production') : t('沙箱环境', 'Sandbox') }}</span><span v-else class="channel-storage-note"><Icon name="lock" :size="13" />{{ t('密钥加密保存', 'Encrypted credentials') }}</span><button class="button button-secondary" :disabled="loading || !!loadError" @click="openEditor(ch)"><Icon name="settings" :size="15" />{{ ch.version || ch.configured ? t('修改配置', 'Edit configuration') : t('配置渠道', 'Configure channel') }}</button><button v-if="ch.id === 'wechat' && ch.configured" class="text-link" :disabled="checking === ch.config_id" @click="check(ch)"><Icon v-if="checking === ch.config_id" name="loader" class="spin" :size="13" />{{ t('检查配置', 'Check') }}</button><button v-if="ch.integrated" class="text-link" @click="c.navigate('testpay', { config: ch.config_id })">{{ t('测试支付', 'Test payment') }}<Icon name="arrow" :size="14" /></button></div>
+    <div v-if="ch.configured" class="channel-card-actions"><span class="channel-storage-note"><Icon name="lock" :size="13" />{{ t('密钥加密保存', 'Encrypted credentials') }}</span><button class="button button-secondary" :disabled="loading || !!loadError" @click="openEditor(ch)"><Icon name="settings" :size="15" />{{ t('修改配置', 'Edit configuration') }}</button><button class="text-link" :disabled="checking === ch.config_id" @click="check(ch)"><Icon v-if="checking === ch.config_id" name="loader" class="spin" :size="13" />{{ t('检查配置', 'Check') }}</button><button class="text-link" :disabled="!ch.integrated" @click="c.navigate('testpay', { config: ch.config_id })">{{ t('测试支付', 'Test payment') }}<Icon name="arrow" :size="14" /></button></div>
+    <div v-else class="channel-card-actions"><button class="button button-secondary" :disabled="loading || !!loadError" @click="openEditor(ch)"><Icon name="settings" :size="15" />{{ t('配置渠道', 'Configure channel') }}</button></div>
     <p v-if="checks[ch.config_id]" class="channel-check" :class="checks[ch.config_id].ok ? 'ok' : 'bad'" role="status"><Icon :name="checks[ch.config_id].ok ? 'success' : 'alert'" :size="15" />{{ checks[ch.config_id].text }}</p>
   </article></div>
   <ConfirmDialog :open="!!confirming" :busy="toggling" :title="confirming?.enabled ? t('停用这份配置', 'Disable this configuration') : t('启用这份配置', 'Enable this configuration')" :description="t('仅影响新订单创建，已有订单的查询与回调继续处理', 'Applies to new orders; existing queries and callbacks continue')" @cancel="confirming = false" @confirm="toggle"><p v-if="error" class="error-box" role="alert">{{ error }}</p></ConfirmDialog>

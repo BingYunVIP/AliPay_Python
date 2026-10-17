@@ -7,10 +7,11 @@ from decimal import Decimal,InvalidOperation
 DEFAULTS={
  'registration_review':False,'registration_paid':False,'registration_fee':'10.00',
  'domain_add':False,'domain_enforce':False,'merchant_refund':False,'refund_fee_payer':'platform',
- 'fee_rate':'1.50','fee_threshold':'0.00','fee_minimum':'0.00',
+ # 商户每笔手续费 = 订单金额 × 费率，四舍五入到分；不足最低手续费时按最低收取（默认 0.01 元）
+ 'fee_rate':'1.50','fee_threshold':'0.01','fee_minimum':'0.01',
  'blocked_keywords':[],'blocked_message':'该商品暂不支持支付',
  'invite_enabled':False,'invite_basis':'fee','invite_rate':'10.00','invite_cap_fee':True,'invite_timing':'immediate',
- 'deposit_enabled':False,'deposit_minimum':'100.00','deposit_freeze_days':7,
+ 'deposit_enabled':False,'deposit_minimum':'10.00','deposit_freeze_days':7,'merchant_domain_limit':1,
  'risk_enabled':False,'risk_window_seconds':300,'risk_merchant_count':60,'risk_ip_count':30,'risk_daily_amount':'0.00',
  'risk_failure_count':30,'risk_min_success_rate':'5.00','risk_callback_failures':10,'blocked_ips':[],
  'settlement_mode':'off','settlement_days':1,'settlement_minimum':'10.00','settlement_rate':'0.00','settlement_fee_min':'0.00','settlement_fee_max':'0.00','settlement_daily_limit':1,
@@ -20,7 +21,7 @@ DEFAULTS={
 }
 BOOLS={k for k,v in DEFAULTS.items() if type(v)is bool}
 ENUMS={'refund_fee_payer':{'platform','merchant'},'invite_basis':{'fee','amount'},'invite_timing':{'immediate','daily','settlement'},'settlement_mode':{'off','manual','auto','both'},'ip_source':{'remote','x_real_ip','x_forwarded_for','cf_connecting_ip'}}
-INTEGERS={'deposit_freeze_days':(0,3650),'risk_window_seconds':(60,86400),'risk_merchant_count':(1,10000),'risk_ip_count':(1,10000),'risk_failure_count':(1,10000),'risk_callback_failures':(1,10000),'settlement_days':(0,30),'settlement_daily_limit':(1,100),'jobs_interval_seconds':(5,3600)}
+INTEGERS={'deposit_freeze_days':(0,3650),'merchant_domain_limit':(1,10),'risk_window_seconds':(60,86400),'risk_merchant_count':(1,10000),'risk_ip_count':(1,10000),'risk_failure_count':(1,10000),'risk_callback_failures':(1,10000),'settlement_days':(0,30),'settlement_daily_limit':(1,100),'jobs_interval_seconds':(5,3600)}
 RATES={'fee_rate','invite_rate','risk_min_success_rate','settlement_rate'}
 MONEY={'registration_fee','fee_threshold','fee_minimum','deposit_minimum','risk_daily_amount','settlement_minimum','settlement_fee_min','settlement_fee_max'}
 

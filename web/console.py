@@ -7,12 +7,27 @@ import sqlite3
 import time
 from datetime import datetime, timedelta
 from decimal import Decimal
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from flask import Response, g, jsonify, request
 
 from bypay.payment_validation import money
+from .platform_rules import amount, cents
 from .store import present_order
+
+# 网站域名：允许带 http/https、端口和路径，最终只保留主机名
+SITE_HOST = re.compile(r"(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[A-Za-z]{2,63}")
+
+
+def site_host(value):
+    if not isinstance(value, str): raise ValueError("invalid_domain")
+    text = value.strip()
+    if not text: return ""
+    parsed = urlsplit(text if "://" in text else "http://" + text)
+    host = (parsed.hostname or "").rstrip(".").lower()
+    if not host or len(host) > 253 or not SITE_HOST.fullmatch(host): raise ValueError("invalid_domain")
+    return host
 
 ZONE = ZoneInfo("Asia/Shanghai")
 # The first part of an event's stage names its category in the event log
@@ -119,7 +134,13 @@ def install_console(app, store, auth, trace, cfg, ready, ApiError):
         page, size = page_args()
         with store.connect() as db:
             total = db.execute(f"SELECT COUNT(*) FROM orders o WHERE {where}", args).fetchone()[0]
-            rows = db.execute(f"SELECT o.*,c.name config_name FROM orders o LEFT JOIN channel_configs c ON c.id=o.payment_config_id WHERE {where} ORDER BY o.created_at DESC,o.out_trade_no DESC LIMIT ? OFFSET ?", [*args, size, (page - 1) * size]).fetchall()
+            rows = db.execute(f"""SELECT o.*,c.name config_name,u.email merchant_email,m.pid merchant_id,
+                COALESCE(f.fee,0) fee_cents FROM orders o
+                LEFT JOIN channel_configs c ON c.id=o.payment_config_id
+                LEFT JOIN users u ON u.id=o.user_id
+                LEFT JOIN merchant_accounts m ON m.user_id=o.user_id
+                LEFT JOIN financial_orders f ON f.number=o.out_trade_no
+                WHERE {where} ORDER BY o.created_at DESC,o.out_trade_no DESC LIMIT ? OFFSET ?""", [*args, size, (page - 1) * size]).fetchall()
         return jsonify(orders=[present_order(row) for row in rows], total=total, page=page, page_size=size)
 
     @app.get("/api/console/orders/ids")
@@ -228,9 +249,12 @@ def install_console(app, store, auth, trace, cfg, ready, ApiError):
         where, args = ("instr(u.email,?)>0", [search]) if search else ("1=1", [])
         with store.connect() as db:
             total = db.execute(f"SELECT COUNT(*) FROM users u WHERE {where}", args).fetchone()[0]
-            rows = db.execute(f"""SELECT u.id,u.email,u.role,u.disabled,u.created_at,k.suffix,m.pid merchant_id,m.mode signature_mode,a.review,a.fee_due,a.fee_paid,a.risk_hold,a.risk_reason,
+            rows = db.execute(f"""SELECT u.id,u.email,u.role,u.disabled,u.created_at,k.suffix,m.pid merchant_id,m.mode signature_mode,a.review,a.fee_due,a.fee_paid,a.risk_hold,a.risk_reason,a.pay_enabled,
                 (SELECT COUNT(*) FROM orders o WHERE o.user_id=u.id) order_count,
-                (SELECT COALESCE(SUM(CAST(ROUND(CAST(amount AS NUMERIC)*100) AS INTEGER)),0) FROM orders o WHERE o.user_id=u.id AND o.paid_at IS NOT NULL) revenue_cents
+                (SELECT COUNT(*) FROM orders o WHERE o.user_id=u.id AND o.paid_at IS NOT NULL) paid_count,
+                (SELECT COALESCE(SUM(CAST(ROUND(CAST(amount AS NUMERIC)*100) AS INTEGER)),0) FROM orders o WHERE o.user_id=u.id AND o.paid_at IS NOT NULL) revenue_cents,
+                (SELECT COALESCE(-SUM(l.cents),0) FROM ledger_lines l WHERE l.user_id=u.id AND l.account='deposit') deposit_cents,
+                (SELECT GROUP_CONCAT(d.host,'、') FROM merchant_domains d WHERE d.user_id=u.id) domains
                 FROM users u LEFT JOIN api_keys k ON k.user_id=u.id LEFT JOIN merchant_accounts m ON m.user_id=u.id LEFT JOIN merchant_access a ON a.user_id=u.id WHERE {where} ORDER BY u.id LIMIT ? OFFSET ?""", [*args, size, (page - 1) * size]).fetchall()
         return jsonify(users=[dict(row) for row in rows], total=total, page=page, page_size=size)
 
@@ -242,12 +266,33 @@ def install_console(app, store, auth, trace, cfg, ready, ApiError):
         email, password = payload.get("email", ""), payload.get("password", "")
         if not isinstance(email, str) or len(email) > 254 or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email): raise ApiError("invalid_email")
         if not isinstance(password, str) or not 12 <= len(password) <= 128: raise ApiError("password_too_short")
+        operations = app.extensions["operations"]; rules = operations.rules.read()
+        values = payload.get("domains", [])
+        if not isinstance(values, list) or len(values) > 10 or any(not isinstance(v, str) for v in values): raise ApiError("invalid_domain")
+        try: hosts = list(dict.fromkeys(host for host in (site_host(value) for value in values) if host))
+        except ValueError: raise ApiError("invalid_domain")
+        if len(hosts) > rules["merchant_domain_limit"]: raise ApiError("domain_limit_exceeded")
+        whitelist, pay_enabled, disabled = payload.get("callback_whitelist", False), payload.get("pay_enabled", True), payload.get("disabled")
+        if type(whitelist) is not bool or type(pay_enabled) is not bool or (disabled is not None and type(disabled) is not bool): raise ApiError("invalid_json")
+        try: deposit = cents(str(payload.get("deposit", "0.00")).strip() or "0.00")
+        except ValueError: raise ApiError("invalid_amount")
+        # 保证金低于门槛时默认停用商户状态，管理员仍可显式开启
+        if disabled is None: disabled = deposit < cents(rules["deposit_minimum"])
         try: user = store.register(email.strip().lower(), password)
         except sqlite3.IntegrityError: raise ApiError("email_unavailable", 409)
         app.extensions["merchants"].ensure(user["id"])
-        app.extensions["operations"].ensure(user["id"])
-        trace("console.user", "user_created", {"target_user_id": user["id"]}, user_id=g.user["id"])
-        return jsonify(user=user), 201
+        operations.ensure(user["id"])
+        with store.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("UPDATE users SET disabled=? WHERE id=?", (int(disabled), user["id"]))
+            db.execute("UPDATE merchant_access SET pay_enabled=? WHERE user_id=?", (int(pay_enabled), user["id"]))
+            for host in hosts:
+                db.execute("INSERT OR IGNORE INTO merchant_domains(user_id,host,status,created_at) VALUES (?,?,?,?)",
+                           (user["id"], host, "approved" if whitelist else "pending", int(time.time())))
+        if deposit: operations.credit_deposit(user["id"], deposit, "user:" + str(user["id"]))
+        trace("console.user", "user_created", {"target_user_id": user["id"], "domains": hosts, "callback_whitelist": whitelist,
+              "disabled": disabled, "pay_enabled": pay_enabled, "deposit": amount(deposit)}, user_id=g.user["id"])
+        return jsonify(user={**user, "disabled": disabled, "pay_enabled": pay_enabled, "domains": hosts, "deposit": amount(deposit)}), 201
 
     @app.post("/api/admin/users/<int:user_id>/access")
     @auth(session_only=True, admin=True)
@@ -265,6 +310,30 @@ def install_console(app, store, auth, trace, cfg, ready, ApiError):
                 db.execute("DELETE FROM api_keys WHERE user_id=?", (user_id,))
         trace("console.user", "user_disabled" if payload["disabled"] else "user_enabled", {"target_user_id": user_id}, user_id=g.user["id"])
         return jsonify(ok=True)
+
+    @app.post("/api/admin/users/<int:user_id>/pay-access")
+    @auth(session_only=True, admin=True)
+    def user_pay_access(user_id):
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict) or type(payload.get("pay_enabled")) is not bool: raise ApiError("invalid_json")
+        with store.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            user = db.execute("SELECT role FROM users WHERE id=?", (user_id,)).fetchone()
+            if not user: raise ApiError("not_found", 404)
+            if user["role"] == "admin": raise ApiError("admin_protected", 403)
+            db.execute("UPDATE merchant_access SET pay_enabled=? WHERE user_id=?", (int(payload["pay_enabled"]), user_id))
+        trace("console.user", "user_pay_enabled" if payload["pay_enabled"] else "user_pay_disabled", {"target_user_id": user_id}, user_id=g.user["id"])
+        return jsonify(ok=True)
+
+    @app.get("/api/admin/users/<int:user_id>/deposit")
+    @auth(session_only=True, admin=True)
+    def user_deposit(user_id):
+        with store.connect() as db:
+            user = db.execute("SELECT id FROM users WHERE id=?", (user_id,)).fetchone()
+            if not user: raise ApiError("not_found", 404)
+            balance = db.execute("SELECT COALESCE(-SUM(cents),0) FROM ledger_lines WHERE user_id=? AND account='deposit'", (user_id,)).fetchone()[0]
+        rules = app.extensions["operations"].rules.read()
+        return jsonify(deposit_cents=balance, deposit=amount(balance), deposit_minimum=rules["deposit_minimum"])
 
     @app.get("/api/admin/settings")
     @auth(session_only=True, admin=True)

@@ -3,7 +3,7 @@ import { computed, inject, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { api, auth, t } from '../state'
 import { usePaged } from './useConsole'
-import { fullDate, productName, status } from './format'
+import { amount, fullDate, productName, status } from './format'
 import Icon from '../components/Icon.vue'
 import Brand from '../components/Brand.vue'
 import EmptyState from './EmptyState.vue'
@@ -95,14 +95,16 @@ async function exportSelected() {
       <table class="console-table orders-table">
         <thead><tr>
           <th class="check-cell"><input type="checkbox" :aria-label="t('选择本页订单', 'Select orders on this page')" :checked="pageSelected" :indeterminate.prop="pageSome" @change="togglePage($event.target.checked)" /></th>
-          <th>{{ t('商品 / 订单号', 'Item / Order') }}</th><th>{{ t('渠道 / 产品', 'Channel / Product') }}</th><th>{{ t('实付金额', 'Amount') }}</th><th>{{ t('交易状态', 'Status') }}</th><th>{{ t('创建时间', 'Created at') }}</th><th>{{ t('支付时间', 'Paid at') }}</th><th class="align-right"><span class="action-head">{{ t('操作', 'Actions') }}</span></th>
+          <th>{{ t('商户 ID / 邮箱', 'Merchant / Email') }}</th><th>{{ t('商品 / 订单号', 'Item / Order') }}</th><th>{{ t('渠道 / 产品', 'Channel / Product') }}</th><th>{{ t('实付金额', 'Amount') }}</th><th>{{ t('手续费', 'Fee') }}</th><th>{{ t('交易状态', 'Status') }}</th><th>{{ t('创建时间', 'Created at') }}</th><th>{{ t('支付时间', 'Paid at') }}</th><th class="align-right"><span class="action-head">{{ t('操作', 'Actions') }}</span></th>
         </tr></thead>
         <tbody>
           <tr v-for="order in rows.data.value" :key="order.out_trade_no">
             <td class="check-cell"><input type="checkbox" :aria-label="t(`选择订单 ${order.out_trade_no}`, `Select order ${order.out_trade_no}`)" :checked="selected.has(order.out_trade_no)" @change="toggle(order.out_trade_no)" /></td>
+            <td><code>{{ order.merchant_id || '—' }}</code><small class="ellipsis">{{ order.merchant_email || '—' }}</small></td>
             <td><button type="button" class="order-name" @click="c.selectedOrder.value = order">{{ order.subject }}</button><code>{{ order.out_trade_no }}</code></td>
             <td><span class="table-channel"><span class="brand-small" :class="order.channel"><Brand :name="order.channel" /></span>{{ order.config_name || channelNames[order.channel] }}</span><small>{{ productName(order.product) }}</small></td>
             <td class="numeric strong">¥ {{ order.amount }}</td>
+            <td class="numeric">¥ {{ amount(order.fee_cents) }}</td>
             <td><span class="state-badge" :class="order.status"><i></i>{{ status(order.status) }}</span></td>
             <td class="date-cell">{{ fullDate(order.created_at) }}</td>
             <td class="date-cell">{{ fullDate(order.paid_at) }}</td>
