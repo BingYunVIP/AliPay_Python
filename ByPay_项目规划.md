@@ -139,11 +139,12 @@ https://service.mail.qq.com/detail/0/75
 - 服务器上的代码比 GitHub main 旧了好几个提交。这次更新会一次带来：商户准入、邮件和结算、控制台改版、微信支付、测试站可选支付宝或微信支付、域名验证文件路由，以及 ByPay.sh 新增的“5）更新代码”菜单（旧的 ByPay.sh 没有，所以这一次要手动更新，以后我可以自己在菜单里选 5）
 - 数据库升级只新增表和列，不删除任何数据；所以更新前一定要备份并记录基线
 - 不使用 Docker；除非下面明确要求，不要改 Nginx / Cloudflare；不要做真实付款、真实退款、真实出款；不要创建微信订单，也不要点击“检查配置”（它们会真实联系微信）
+- 仓库里的 AGENTS.md 会要求“在 DEVELOPMENT_LOG.md 记录部署状态”，那是写给本机开发环境的；在 VPS 上不要改它，部署记录写到 /root/bingyun-backups/deploy-notes.md
 
 A. 只读检查（这一阶段不改任何东西）
 1. 主站目录：systemctl show bypay.service --property=WorkingDirectory --value（没有就查 bypay-web.service）；确认它是 git 仓库（git remote -v 指向上面的地址），git branch --show-current 是 main（不是就停下来），记下更新前的提交号 git rev-parse HEAD；用 df -h 确认磁盘剩余空间足够（至少 1 GB）
 2. 找到测试站：ps -ef | grep -E 'serve.py|Pay_Callback_Demo'，用 readlink /proc/<进程号>/cwd 确认目录，并记下它是怎么启动的（tmux、screen、nohup 或 systemd），后面要用同样的方式重启
-3. 在主站目录运行 git status --short；如果有本地改动，先把 git diff 保存成补丁文件并告诉我，再继续，不要丢弃
+3. 在主站目录运行 git status --short。如果受 git 跟踪的文件有本地改动：先把 git diff 保存成补丁文件，再把每个改动过的文件各存一份完整副本（都放在 /root/bingyun-backups/ 下，不要放进仓库），并告诉我。如果改动的只是 DEVELOPMENT_LOG.md 这类以前部署时写的记录，确认两份备份都在之后，可以用 git restore <文件> 只撤销这一个文件的修改（不要用 reset --hard），再把你新增的记录整理到 /root/bingyun-backups/deploy-notes.md（里面如果有密码、密钥、令牌就不要写进去也不要显示，只告诉我有这类内容）；其他文件有改动就停下来问我。从现在起，在 VPS 上不要修改仓库里受 git 跟踪的任何文件，也不要做本地 git 提交（否则分支会与 GitHub 分叉，以后菜单 5 无法自动更新），部署记录一律写到 /root/bingyun-backups/deploy-notes.md
 4. 记录更新前的基线（只读，只记数字和哈希）。数据库文件是 .env 里 DATABASE 指定的文件（只读取这一行，不要显示 .env 的其他内容），通常是 <主站目录>/data/web.sqlite3。把路径填进下面的脚本运行，并记下输出：
    python3 - <<'EOF'
    import hashlib, sqlite3

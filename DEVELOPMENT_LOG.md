@@ -272,6 +272,7 @@ VPS 更新前需确认 Nginx 把 /m/ 转发到 Pay、系统管理里的站点地
 
 已提交并推送到 origin/main（提交号以 git log 为准）；VPS 尚未更新；真实付款与退款未执行；本轮之前本地的两个提交（UI 重做、微信支付与管理页面重构）随这次一起推送
 VPS 更新提示词见 ByPay_项目规划.md 第 8 节；第一次更新要手动 git fetch / merge --ff-only 再选菜单 1，之后才可以用菜单 5
+VPS Codex 在第 5 步（快进合并）停下：服务器上的 DEVELOPMENT_LOG.md 有本地修改（它以前按 AGENTS.md 把部署记录写进了这个受跟踪的文件），git 拒绝覆盖；它已把修改保存为补丁。VPS 更新前基线（由 VPS Codex 汇报）：代码在 d52c3cc，用户 3、订单 7（已付 3）、渠道配置 4，integrity_check ok，bypay.service active；测试站在 /root/Pay_Callback_Demo，由 tmux 会话 bingyun-merchant-demo 运行。处理方式：再存一份完整副本后只撤销这一个文件的修改，快进合并，旧记录移到仓库之外；AGENTS.md 新增规则：VPS 上不改受跟踪文件、不做本地提交，部署记录写到 /root/bingyun-backups/，由本机补记
 首版提示词要求 VPS Codex 先读 ByPay_项目规划.md，但服务器上的代码早于加入该文件的提交 459897f，文件不存在，VPS Codex 在只读检查阶段暂停（没有改动任何东西）；已改写成自包含的提示词（所有命令、基线脚本和检查项都写在提示词里），并把这条经验写入 AGENTS.md
 你需要做的验收：
 1. VPS 更新完成后，在微信公众平台绑定 JS 安全域名 pay.bingyun.vip：先在浏览器打开 https://pay.bingyun.vip/MP_verify_YIZThTeg958vnQzp.txt 应看到 YIZThTeg958vnQzp；当前的扫码、H5 支付本身不需要这个域名

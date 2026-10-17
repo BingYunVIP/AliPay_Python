@@ -1,7 +1,7 @@
 # 冰云支付开发约定
 
 用户要求长期执行：分析错误 → 核对参考核心代码 → 规划 → 开发优化 → 自动化测试和浏览器冒烟 → 部署验证 → 清理无用产物 → 记录结果
-每次任务在 DEVELOPMENT_LOG.md 记录问题、参考实现、修改、验证证据、发布提交和部署状态；不得把“付款成功”替代接口、页面及业务流程验收
+每次任务在 DEVELOPMENT_LOG.md 记录问题、参考实现、修改、验证证据、发布提交和部署状态（在本机开发环境；VPS 上不要改这个文件，见文末规则）；不得把“付款成功”替代接口、页面及业务流程验收
 
 - 商户模型参考 /root/ByPay/Epay/admin/uset.php?my=api 与 includes/lib/Payment.php、ApiHelper.php、api/Pay.php、functions.php
 - 用户要求 V1 商户 ID + MD5、V2 商户 ID + RSA；不要擅自用自定义 Bearer API Key 替代商户接入契约
@@ -49,3 +49,4 @@ SMTP / Turnstile 真实验收需用户配置的外部凭据；没有自动出款
 - ByPay.sh 菜单 5 更新代码（deploy/update.sh）：只允许 fast-forward；先备份数据库、密钥和配置（web.management backup，保留最近 3 份 update-*），再合并和部署，部署失败自动回到更新前的代码和网页文件并重启旧版本（reset 被拒绝时强制回退，代码回退失败也要把服务启动起来）；本机改动的程序文件需用户确认后另存为补丁，不会被静默覆盖；确认之后 Ctrl+C 被忽略、终端断开也走到头，输出经 tee 写入 data/update.log；update.sh 不依赖 set -e，部署放在子进程 bash 里执行，改动后运行 tests/test_update_script.py（含伪终端挂断测试）并对新增保护做变异检查
 - 不要在本机直接执行真实 deploy() 或菜单 5：它们会以 root 覆盖 /etc/systemd/system/bypay.service；本机部署用备份 → 构建 → systemctl restart bypay
 - 给 VPS Codex 的提示词必须自包含（ByPay_项目规划.md 第 8 节）：服务器上的代码可能比仓库旧，读不到新文档，所以所有命令、检查和期望值都写进提示词本身，不要让它先去读尚未更新到服务器的文件；写之前用 git log 核对服务器可能缺哪些提交
+- VPS 上不要修改仓库里受 git 跟踪的任何文件（包括 DEVELOPMENT_LOG.md 和 AGENTS.md）：本机改动过的文件会挡住 git 快进合并，也会让 ByPay.sh 菜单 5 停下来询问；VPS 上的部署记录写到仓库之外（/root/bingyun-backups/deploy-notes.md），由本机根据 VPS 的报告补记 DEVELOPMENT_LOG.md；VPS 上也不要做本地 git 提交，否则分支会与线上分叉，菜单 5 将无法自动更新
