@@ -146,7 +146,7 @@ A. 更新
    print("orders", db.execute("SELECT COUNT(*) FROM orders").fetchone()[0], "paid", db.execute("SELECT COUNT(*) FROM orders WHERE paid_at IS NOT NULL").fetchone()[0])
    print("integrity", db.execute("PRAGMA integrity_check").fetchone()[0])
    EOF
-3. printf '5\n\n0\n' | ./ByPay.sh —— 菜单 5 会自己备份、只做快进合并、部署，部署失败会自动回到旧版本。输出“更新完成”就继续；输出“已是最新版本”就先 git fetch origin，再看 git log --oneline -3 origin/main 是否真的没有新提交（有新提交却说已是最新，把输出写进报告）；菜单 5 失败或回滚：把完整输出写进报告，再手动做 git fetch origin && git merge --ff-only origin/main && .venv/bin/python -m web.management backup && printf '1\ny\n0\n' | ./ByPay.sh；不能快进就写进报告，不要 reset --hard
+3. printf '2\n\n0\n' | ./ByPay.sh —— 菜单 2）更新（与 6）更新代码同一套流程）会自己备份、只做快进合并、部署，部署失败会自动回到旧版本。输出“更新完成”就继续；输出“已是最新版本”就先 git fetch origin，再看 git log --oneline -3 origin/main 是否真的没有新提交（有新提交却说已是最新，把输出写进报告）；更新菜单失败或回滚：把完整输出写进报告，再手动做 git fetch origin && git merge --ff-only origin/main && .venv/bin/python -m web.management backup && printf '1\ny\n0\n' | ./ByPay.sh；不能快进就写进报告，不要 reset --hard
 4. 验证：git rev-parse HEAD 等于 git rev-parse origin/main；systemctl is-active bypay 是 active；curl -s http://127.0.0.1:888/health 正常；再运行一次第 2 步的脚本：integrity 必须是 ok，users 的数量和哈希必须与更新前相同，orders 和 paid 不能减少；journalctl -u bypay -n 60 --no-pager 里没有 Traceback；只读取 .env 里 BYPAY_QR_PREFETCH 这一行：没有这一行就是默认开启（正常），写着 0 就是被关掉了（写进报告）；curl -sI https://pay.bingyun.vip/login 里 Content-Security-Policy 头应该只有一条（Nginx 或 Cloudflare 不应再加一条，否则浏览器可能拦住 data: 形式的二维码图片），多了就写进报告，不要改 Nginx
 5. 用管理员登录做一次快速检查：账号密码在数据库所在目录的 .admin-credentials（JSON，字段 account 和 password，不要显示）；POST https://pay.bingyun.vip/api/auth/login（请求头带 Origin: https://pay.bingyun.vip，JSON 是 {"email": 账号, "password": 密码}，保存 cookie），再 GET /api/auth/me、/api/console/overview、/api/admin/diagnostics、/api/admin/tasks 都应是 200，/api/admin/tasks 返回里的 ledger_balanced 必须是 true；再 curl -s https://test.bingyun.vip/ 确认页面里仍有“支付方式”和“微信支付”
 
@@ -266,7 +266,7 @@ C. 测速（我回复“已下单”之后；全部只读，不要自己下单�
 | 域名验证文件 | 文件放进仓库的 verification/，从站点根路径原样提供（`/MP_verify_<令牌>.txt`）；文件名限定为字母数字下划线连字符加 .txt，最大 1 KB，不跟随符号链接，路径穿越和其他类型文件一律 404；新增文件不需要构建或重启；随仓库交付 MP_verify_YIZThTeg958vnQzp.txt（16 字节，无换行） | tests/test_verification.py：逐字节一致、HEAD、大小/符号链接/隐藏文件/路径穿越/大小写、站点其余路径不变、默认目录下的真实文件；本机服务重启后 curl 返回令牌 |
 | 测试站支付方式 | 页面“支付方式”单选：支付宝（默认）、微信支付；选择随订单保存，下单带 `type=alipay|wxpay`；回调和查询返回的 type 必须与订单一致，否则不确认到账；没有选择的旧页面按支付宝处理；升级前的订单按支付宝显示和确认 | 测试站 31 项（类型随订单、未知类型 400、type 不一致拒绝、微信订单查询确认、旧订单迁移、页面无内联样式）；smoke_epay 的选项几何和切换 |
 | 微信与 https | Pay 的站点地址不是公网 https 时，Pay 返回 `wechat_https_required`，测试站把订单标为创建失败并在页面说明原因；不放宽这一规则，也不让订单停在等待状态；其余微信错误码（AppID 不匹配、未授权、渠道未配置、渠道错误）原样提示，未知代码一律显示为请求失败 | smoke_epay 先在 http 的 Pay 上验证拒绝，再在 https 的 Pay 与测试站上完整走 V1/V2 微信流程（下单、内嵌微信二维码、伪造通知被拒、签名通知、商户确认成功）；tests/test_merchant_demo.py 在 Python 里对真实 Pay 应用跑同样的流程 |
-| 代码更新 | ByPay.sh 菜单“5）更新代码”（deploy/update.sh）：fetch → 只允许 fast-forward → 显示将更新的提交并确认 → 备份（SQLite 在线备份、密钥、配置，保留最近 3 份 update-*）→ 保存网页文件 → 合并 → 部署（不再询问，不打印管理员密码）→ 成功后重新载入菜单；部署失败则回到更新前的代码和网页文件，重新启动旧版本，仍失败就按旧版本重新部署，并说明数据备份位置 | tests/test_update_script.py 34 项（临时 git 仓库 + 桩化的系统命令）：见下方“验收证据” |
+| 代码更新 | ByPay.sh 菜单“2）更新”和“6）更新代码”（同一套流程，deploy/update.sh）：fetch → 只允许 fast-forward → 显示将更新的提交并确认 → 备份（SQLite 在线备份、密钥、配置，保留最近 3 份 update-*）→ 保存网页文件 → 合并 → 部署（不再询问，不打印管理员密码）→ 成功后重新载入菜单；部署失败则回到更新前的代码和网页文件，重新启动旧版本，仍失败就按旧版本重新部署，并说明数据备份位置 | tests/test_update_script.py 34 项（临时 git 仓库 + 桩化的系统命令）：见下方“验收证据” |
 
 设计要点
 - 备份在任何改动之前完成；失败则本次什么都不改。回滚只恢复代码和网页文件，不回退数据库：迁移只新增表和列，旧版本可继续使用；需要恢复数据时用 data/backups/update-* 里的 web.sqlite3、密钥和配置（env.local 或 env 是当时的配置文件）
@@ -275,13 +275,13 @@ C. 测速（我回复“已下单”之后；全部只读，不要自己下单�
 - 回滚时 `git reset --keep` 被拒绝（部署改动了受跟踪文件）则改用 `reset --hard`；两者都失败时仍会重新启动服务并明确告知“代码仍是新版本”，不会让服务停着
 - 本机改动过的程序文件需要确认，确认后保存为 data/update-patches/ 下权限 600 的补丁，工作区还原后更新，回滚时补丁会重新应用
 - 管理命令的退出码：web.management 被 Ctrl+C 取消返回 130、输入被关闭返回 1，不再把“取消”当成“成功”
-- 第一次更新时 VPS 上的 ByPay.sh 还没有菜单 5，需要手动 git fetch、merge --ff-only 再选菜单 1，见第 8 节
+- 第一次更新时 VPS 上的 ByPay.sh 还没有更新菜单项（旧版是 5，现在是 2 和 6），需要手动 git fetch、merge --ff-only 再选菜单 1，见第 8 节
 
 验收证据与边界
 - 主站 268 项、测试站 31 项测试通过；四套浏览器冒烟通过：smoke_ui 41、smoke_platform 62、smoke_epay 7（新增选项几何、http 拒绝、https 的 V1/V2 微信流程）、smoke_wechat 29
 - test_update_script 覆盖：正常更新的步骤顺序（备份在合并之前、部署用新脚本）、已是最新、取消、部署失败在 `||` / `if` / 普通三种调用方式下都回滚、回滚时 git 拒绝 reset --keep、代码无法恢复时仍启动服务、旧版本也起不来、断线（SIGHUP 与真实伪终端挂断）后更新照常完成、Ctrl+C、备份失败不动代码、仓库不可达、本地提交/分叉不被覆盖、非 git/游离 HEAD/无 origin、更新与部署互斥、部署遗留的后台进程不占用更新锁、合并被拒绝、本机改动另存为补丁并在回滚时还原、更新日志权限与轮转、菜单与参数、普通部署行为不变；对其中 22 处保护逐一做了变异检查，去掉任何一处，对应测试都会失败
 - 另一个代理独立评审了更新脚本、备份和验证文件路由：没有会丢数据或损坏数据库的问题；提出的 5 项（回滚时 reset 被拒绝则服务保持停止、断线后写终端失败导致回滚、含 # 或 ? 的路径下备份得到空库、取消被当成成功、测试缺口）均已修复并有测试；其中“确认之后不能用 Ctrl+C 中止”是有意的取舍：半途中断会让服务停在半更新状态，所以改为提示后走到头，卡住时可在另一个终端结束进程
-- 没有联系微信支付，没有真实付款、退款；没有在本机运行真实的 deploy() 或菜单 5（会以 root 覆盖 /etc/systemd/system/bypay.service），更新流程用临时 git 仓库和桩化的系统命令验证，另在临时克隆上用真实的检查函数验证了“未部署”“没有本项目的系统服务”两种拒绝
+- 没有联系微信支付，没有真实付款、退款；没有在本机运行真实的 deploy() 或更新菜单（2 / 6，会以 root 覆盖 /etc/systemd/system/bypay.service），更新流程用临时 git 仓库和桩化的系统命令验证，另在临时克隆上用真实的检查函数验证了“未部署”“没有本项目的系统服务”两种拒绝
 - JS 安全域名：当前的网页扫码、H5、APP 下单不需要；绑定只需要 VPS 更新后 https://pay.bingyun.vip/MP_verify_YIZThTeg958vnQzp.txt 返回令牌。微信校验若走 http:80 而 Cloudflare 开了“始终使用 HTTPS”，需要如实排查，不能关闭全站跳转
 - 本机数据库不会同步到 VPS：线上控制台需要由用户重新填写微信 7 项参数
 

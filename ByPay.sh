@@ -105,6 +105,17 @@ deploy() (
   esac
 )
 
+# 菜单 2）更新 与 6）更新代码 共用：成功后重新载入菜单，已是最新或失败则回到主菜单
+bypay_menu_update() {
+  local result=0
+  bypay_update "$BYPAY_PROJECT_ROOT" || result=$?
+  case "$result" in
+    0) echo '正在重新载入菜单'; exec bash "$BYPAY_PROJECT_ROOT/ByPay.sh" ;;
+    3) ;;
+    *) echo '已返回主菜单' ;;
+  esac
+}
+
 main() {
   if [[ $# != 0 ]]; then
     echo '请直接运行 ./ByPay.sh，然后从菜单选择操作'
@@ -113,21 +124,16 @@ main() {
   local choice result
   while true; do
     printf '\n  冰云支付 · ByPay\n\n'
-    printf '  1）部署\n  2）修改账号或密码\n  3）系统状态\n  4）日志\n  5）更新代码\n  0）退出主菜单\n\n'
-    read -r -p '请选择 [0-5]：' choice || break
+    printf '  1）部署\n  2）更新\n  3）修改账号或密码\n  4）系统状态\n  5）日志\n  6）更新代码\n  0）退出主菜单\n\n'
+    read -r -p '请选择 [0-6]：' choice || break
     case "$choice" in
       1) set +e; (set -e; deploy); result=$?; set -e; if [[ "$result" != 0 ]]; then echo '已返回主菜单'; fi ;;
-      2) python_command credentials || true ;;
-      3) tool_status || true ;;
-      4) python_command logs || true ;;
-      5) result=0; bypay_update "$BYPAY_PROJECT_ROOT" || result=$?
-         case "$result" in
-           0) echo '正在重新载入菜单'; exec bash "$BYPAY_PROJECT_ROOT/ByPay.sh" ;;
-           3) ;;
-           *) echo '已返回主菜单' ;;
-         esac ;;
+      2|6) bypay_menu_update ;;
+      3) python_command credentials || true ;;
+      4) tool_status || true ;;
+      5) python_command logs || true ;;
       0) echo '已退出主菜单'; break ;;
-      *) echo '请输入 0 到 5 之间的数字' ;;
+      *) echo '请输入 0 到 6 之间的数字' ;;
     esac
   done
 }

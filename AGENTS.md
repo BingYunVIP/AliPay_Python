@@ -46,10 +46,10 @@ SMTP / Turnstile 真实验收需用户配置的外部凭据；没有自动出款
 - 测试站（merchant-demo）可选支付宝或微信支付，选择随订单保存，回调和查询返回的 type 必须与下单时一致，不一致不确认到账；微信要求 Pay 的站点地址是公网 https，本机 http 会明确返回 wechat_https_required，不要为了本机能测而放宽
 - 修改测试站后：测试站自带测试、tests/test_merchant_demo.py（测试站对真实 Pay 应用，含微信）、tools/smoke_epay.py，再 `python3 tools/package_merchant_demo.py` 重新打包并 `--check`；ZIP 里没有环境文件、密钥、数据库、日志
 - 微信 JS 安全域名等平台的验证文件（MP_verify_xxx.txt）放进仓库根目录的 verification/，从站点根路径原样提供：文件名限定为字母数字下划线连字符加 .txt，最大 1 KB，不跟随符号链接，不用重新构建；不要把别的文件放进该目录
-- ByPay.sh 菜单 5 更新代码（deploy/update.sh）：只允许 fast-forward；先备份数据库、密钥和配置（web.management backup，保留最近 3 份 update-*），再合并和部署，部署失败自动回到更新前的代码和网页文件并重启旧版本（reset 被拒绝时强制回退，代码回退失败也要把服务启动起来）；本机改动的程序文件需用户确认后另存为补丁，不会被静默覆盖；确认之后 Ctrl+C 被忽略、终端断开也走到头，输出经 tee 写入 data/update.log；update.sh 不依赖 set -e，部署放在子进程 bash 里执行，改动后运行 tests/test_update_script.py（含伪终端挂断测试）并对新增保护做变异检查
-- 不要在本机直接执行真实 deploy() 或菜单 5：它们会以 root 覆盖 /etc/systemd/system/bypay.service；本机部署用备份 → 构建 → systemctl restart bypay
+- ByPay.sh 菜单 2）更新 与 6）更新代码 是同一套流程（deploy/update.sh）：只允许 fast-forward；先备份数据库、密钥和配置（web.management backup，保留最近 3 份 update-*），再合并和部署，部署失败自动回到更新前的代码和网页文件并重启旧版本（reset 被拒绝时强制回退，代码回退失败也要把服务启动起来）；本机改动的程序文件需用户确认后另存为补丁，不会被静默覆盖；确认之后 Ctrl+C 被忽略、终端断开也走到头，输出经 tee 写入 data/update.log；update.sh 不依赖 set -e，部署放在子进程 bash 里执行，改动后运行 tests/test_update_script.py（含伪终端挂断测试）并对新增保护做变异检查
+- 不要在本机直接执行真实 deploy() 或更新菜单（2 / 6）：它们会以 root 覆盖 /etc/systemd/system/bypay.service；本机部署用备份 → 构建 → systemctl restart bypay
 - 给 VPS Codex 的提示词必须自包含（ByPay_项目规划.md 第 8 节）：服务器上的代码可能比仓库旧，读不到新文档，所以所有命令、检查和期望值都写进提示词本身，不要让它先去读尚未更新到服务器的文件；写之前用 git log 核对服务器可能缺哪些提交
-- VPS 上不要修改仓库里受 git 跟踪的任何文件（包括 DEVELOPMENT_LOG.md 和 AGENTS.md）：本机改动过的文件会挡住 git 快进合并，也会让 ByPay.sh 菜单 5 停下来询问；VPS 上的部署记录写到仓库之外（/root/bingyun-backups/deploy-notes.md），由本机根据 VPS 的报告补记 DEVELOPMENT_LOG.md；VPS 上也不要做本地 git 提交，否则分支会与线上分叉，菜单 5 将无法自动更新
+- VPS 上不要修改仓库里受 git 跟踪的任何文件（包括 DEVELOPMENT_LOG.md 和 AGENTS.md）：本机改动过的文件会挡住 git 快进合并，也会让 ByPay.sh 更新（菜单 2 / 6）停下来询问；VPS 上的部署记录写到仓库之外（/root/bingyun-backups/deploy-notes.md），由本机根据 VPS 的报告补记 DEVELOPMENT_LOG.md；VPS 上也不要做本地 git 提交，否则分支会与线上分叉，更新菜单（2 / 6）将无法自动更新
 
 支付宝二维码出图速度（根因、数据和验收见 ByPay_项目规划.md 第 14 节）
 - 网页支付的支付宝二维码要从支付宝收银台页面里取（web/cashier.py），微信在下单的返回里就有；慢在每次新建 TLS 连接，并且等收银台打开后才开始取。已有的做法不要改回去：

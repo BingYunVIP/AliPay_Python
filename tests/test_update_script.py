@@ -520,21 +520,21 @@ class UpdateTests(unittest.TestCase):
     def test_menu_lists_the_update_and_still_refuses_arguments(self):
         listed = self.w.menu("0\n")
         self.assertEqual(listed.code, 0)
-        for text in ("5）更新代码", "已退出主菜单"):
+        for text in ("2）更新", "6）更新代码", "已退出主菜单"):
             self.assertIn(text, listed.output)
-        self.assertIn("请输入 0 到 5 之间的数字", self.w.menu("9\n0\n").output)
+        self.assertIn("请输入 0 到 6 之间的数字", self.w.menu("9\n0\n").output)
         refused = self.w.menu("0\n", "unexpected")
         self.assertEqual(refused.code, 2)
         self.assertIn("请直接运行 ./ByPay.sh", refused.output)
         self.assertNotIn("冰云支付", refused.output)
 
     def test_menu_update_reloads_itself_only_after_a_successful_update(self):
-        up_to_date = self.w.menu("5\n0\n")
+        up_to_date = self.w.menu("2\n0\n")
         self.assertEqual((up_to_date.code, up_to_date.output.count("冰云支付")), (0, 2))
         self.assertNotIn("正在重新载入菜单", up_to_date.output)
         self.assertNotIn("已返回主菜单", up_to_date.output)
         new = self.w.publish("A new menu", {"ByPay.sh": lambda text: text.replace("冰云支付 · ByPay", "冰云支付 · ByPay 新版")})
-        updated = self.w.menu("5\n\n0\n")  # the third line is read by the menu that was started again
+        updated = self.w.menu("6\n\n0\n")  # the third line is read by the menu that was started again
         self.assertEqual((updated.code, self.w.head()), (0, new), updated.output)
         self.assertEqual(updated.output.count("冰云支付"), 2)
         self.assertLess(updated.output.index("更新完成"), updated.output.index("正在重新载入菜单"))
@@ -542,7 +542,7 @@ class UpdateTests(unittest.TestCase):
         self.assertTrue(updated.output.rstrip().endswith("已退出主菜单"))
         old = self.w.head()
         self.w.publish("Broken build", {"app.txt": "v3\n"})
-        failed = self.w.menu("5\n\n0\n", BUILD_FAILS="1")
+        failed = self.w.menu("2\n\n0\n", BUILD_FAILS="1")
         self.assertEqual((failed.code, self.w.head()), (0, old))
         self.assertIn("已返回主菜单", failed.output)
         self.assertNotIn("正在重新载入菜单", failed.output)
