@@ -248,6 +248,34 @@ class Store:
                 db.execute("UPDATE orders SET payment_payload=?,pay_url=?,trade_no=COALESCE(trade_no,?) WHERE out_trade_no=?", (json.dumps(payment), payment.get("url", ""), trade_no, number))
             db.execute("UPDATE checkout_jobs SET locked_until=0 WHERE out_trade_no=? AND lease=?", (number, lease))
 
+    def claim_qr(self, number, seconds=25):
+        """One caller at a time asks Alipay for an order's website-checkout QR; the others wait for that answer.
+
+        It uses the checkout job row of the order: an Alipay website order never needs that row for anything else.
+        """
+        now, lease = int(time.time()), secrets.token_hex(16)
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("INSERT OR IGNORE INTO checkout_jobs(out_trade_no) VALUES (?)", (number,))
+            if db.execute("SELECT locked_until FROM checkout_jobs WHERE out_trade_no=?", (number,)).fetchone()[0] > now: return None
+            db.execute("UPDATE checkout_jobs SET locked_until=?,lease=? WHERE out_trade_no=?", (now + seconds, lease, number))
+        return lease
+
+    def latest_page_order(self, channel="alipay"):
+        """When the last website order of a channel was made (0 if never): what decides whether connections are kept warm."""
+        with self.connect() as db:
+            row = db.execute("SELECT created_at FROM orders WHERE channel=? AND product='page' ORDER BY rowid DESC LIMIT 1", (channel,)).fetchone()
+        return row[0] if row else 0
+
+    def qr_busy(self, number):
+        with self.connect() as db:
+            row = db.execute("SELECT locked_until FROM checkout_jobs WHERE out_trade_no=?", (number,)).fetchone()
+        return bool(row) and row[0] > int(time.time())
+
+    def release_qr(self, number, lease):
+        with self.connect() as db:
+            db.execute("UPDATE checkout_jobs SET locked_until=0 WHERE out_trade_no=? AND lease=?", (number, lease))
+
     def policy(self):
         with self.connect() as db:
             rows = {row["key"]: json.loads(row["value"]) for row in db.execute("SELECT * FROM console_settings")}

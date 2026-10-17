@@ -29,6 +29,9 @@ def main():
     log.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     if log.exists() and log.stat().st_size > 10_000_000: log.replace(log.with_suffix('.log.1'))
     env = {**os.environ, "BYPAY_ENV_FILE":str(source), "BYPAY_RUN_MODE":"managed", "BYPAY_FRONTEND_PORT":str(port), "PYTHONUNBUFFERED":"1"}
+    # BYPAY_QR_PREFETCH: Alipay is asked for an order's QR as soon as the order exists, and the connections to Alipay are kept warm for a while
+    # (put BYPAY_QR_PREFETCH=0 in the env file to ask only when the cashier opens). Only the web processes create orders; the payment worker never does.
+    web_env, worker_env = {**env, "BYPAY_QR_PREFETCH": os.environ.get("BYPAY_QR_PREFETCH", "1")}, {**env, "BYPAY_QR_PREFETCH": "0"}
     commands = [[str(ROOT / ".venv/bin/gunicorn"), "--bind", f"{state['host']}:{port}", "--workers", "2", "--threads", "4", "--timeout", "30", "--umask", "0077", "--no-control-socket", "web.wsgi:app"],
                 [sys.executable, "-m", "web.worker"]]
     children = []
@@ -39,8 +42,8 @@ def main():
     signal.signal(signal.SIGTERM, stop); signal.signal(signal.SIGINT, stop); signal.signal(signal.SIGHUP, stop)
     with log.open("ab", buffering=0) as output:
         try:
-            for command in commands:
-                children.append(subprocess.Popen(command, cwd=ROOT, env=env, stdout=output, stderr=subprocess.STDOUT, start_new_session=True))
+            for command, child_env in zip(commands, (web_env, worker_env)):
+                children.append(subprocess.Popen(command, cwd=ROOT, env=child_env, stdout=output, stderr=subprocess.STDOUT, start_new_session=True))
             atomic_text(data / "service.json", json.dumps({"pid":os.getpid(),"children":[p.pid for p in children],"port":port}) + "\n")
             print(f"ByPay 已启动 · 端口 {port}", flush=True)
             while not stopping and all(child.poll() is None for child in children): time.sleep(.3)

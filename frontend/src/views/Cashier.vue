@@ -3,9 +3,11 @@ import { computed, onMounted, onBeforeUnmount, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import Brand from '../components/Brand.vue'
 import Icon from '../components/Icon.vue'
-const route = useRoute(), order = ref(null), error = ref(''), busy = ref(false), qrVersion = ref(0), now = ref(Date.now())
+const route = useRoute(), order = ref(null), error = ref(''), busy = ref(false), qrVersion = ref(0), qrSvg = ref(''), now = ref(Date.now())
 const base = computed(() => `/api/cashier/${encodeURIComponent(route.params.token)}`)
 const waiting = computed(() => order.value?.status === 'CREATED' && order.value.expires_at * 1000 > now.value)
+// the finished image comes with the order when it is ready, so no second request is needed to show it
+const qrSource = computed(() => qrSvg.value ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(qrSvg.value)}` : `${base.value}/qr.svg?v=${qrVersion.value}`)
 const provider = computed(() => order.value?.channel === 'wechat' ? '微信' : '支付宝')
 let timer, posted = false, polling = false
 async function request(path = '', payload) {
@@ -14,11 +16,12 @@ async function request(path = '', payload) {
   if (!response.ok) throw new Error(({cashier_not_found:'收银台不存在或已过期',cashier_qr_unavailable:'二维码暂未获取，请重试',payment_order_expired:'订单已过期，请返回商户重新下单',rate_limited:'刷新较频繁，请稍后重试'})[data.error] || '收银台暂不可用，请稍后重试')
   return data
 }
-async function refresh() {
+async function refresh(first = false) {
   if (polling) return
   polling = true
   try {
-    order.value = await request()
+    order.value = await request(first ? '?qr=1' : '')
+    keepImage()
     if (order.value.paid && !posted) {
       posted = true
       if (timer) window.clearInterval(timer)
@@ -29,15 +32,19 @@ async function refresh() {
   } catch (e) { error.value = e.message }
   finally { polling = false }
 }
+function keepImage() {
+  if (order.value?.qr_svg) qrSvg.value = order.value.qr_svg
+  else if (!order.value?.qr_ready) qrSvg.value = ''
+}
 async function prepare() {
   if (busy.value) return
   busy.value = true; error.value = ''
-  try { order.value = await request('/prepare',{refresh:Boolean(order.value?.qr_ready)}); qrVersion.value++ }
+  try { order.value = await request('/prepare',{refresh:Boolean(order.value?.qr_ready)}); keepImage(); qrVersion.value++ }
   catch (e) { error.value = e.message }
   finally { busy.value = false }
 }
 onMounted(async () => {
-  await refresh()
+  await refresh(true)
   if (waiting.value && !order.value.qr_ready) await prepare()
   if (!order.value?.paid) timer = window.setInterval(() => { now.value = Date.now(); if (!document.hidden) refresh() },2500)
 })
@@ -52,7 +59,7 @@ onBeforeUnmount(() => window.clearInterval(timer))
       <div v-if="order.paid" class="cashier-result" role="status"><Icon name="check" :size="44"/><h2>支付成功</h2><p>支付结果已由冰云支付核验</p></div>
       <template v-else-if="waiting">
         <div class="cashier-qr" :aria-busy="busy">
-          <img v-if="order.qr_ready && !busy" :src="`${base}/qr.svg?v=${qrVersion}`" :alt="`${provider}付款二维码`" width="230" height="230" />
+          <img v-if="order.qr_ready && !busy" :src="qrSource" :alt="`${provider}付款二维码`" width="230" height="230" />
           <div v-else class="cashier-placeholder"><Icon v-if="busy" name="loader" class="spin" :size="28"/><span>{{ busy ? `正在获取${provider}二维码` : '二维码暂未就绪' }}</span></div>
         </div>
         <p>打开{{ provider }}扫一扫</p>

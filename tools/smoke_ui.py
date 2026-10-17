@@ -16,6 +16,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from urllib.parse import unquote
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -124,8 +125,11 @@ def run():
                           and abs(right['x'] + right['width'] - (head['x'] + head['width'])) < 3 and page.locator('.payment-qr-card .qr-countdown').count() == 1)
                     if product in ('page', 'wap'):
                         source = page.locator('.payment-qr-card .qr-expand img').get_attribute('src')
-                        svg = page.request.get(ORIGIN + source).text(); size = int(svg.split('viewBox="0 0 ')[1].split(' ')[0])
+                        # a website order's image arrives with the answer that says its code is ready; a phone order's is loaded from its address
+                        check(f'{product}: the image {"comes with the answer, no second request" if product == "page" else "is loaded from its address"}', source.startswith('data:image/svg+xml') == (product == 'page'), source[:40])
+                        svg = unquote(source.split(',', 1)[1]) if source.startswith('data:') else page.request.get(ORIGIN + source).text(); size = int(svg.split('viewBox="0 0 ')[1].split(' ')[0])
                         check(f'{product}: QR is compact, brand coloured and carries the channel logo', size < 70 and '#075fbd' in svg and 'currentColor' in svg, f'modules={size}')
+                        check(f'{product}: the image is drawn', page.locator('.payment-qr-card .qr-expand img').evaluate('image => image.complete && image.naturalWidth > 0'))
                     else:
                         check(f'{product}: call parameters shown in the same card', page.locator('.payment-qr-card .qr-code-block pre').inner_text().strip() != '')
                     page.locator('.payment-qr-card').screenshot(path=str(evidence / f'card-{product}.png'))

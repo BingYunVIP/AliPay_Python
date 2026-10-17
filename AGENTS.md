@@ -50,3 +50,12 @@ SMTP / Turnstile 真实验收需用户配置的外部凭据；没有自动出款
 - 不要在本机直接执行真实 deploy() 或菜单 5：它们会以 root 覆盖 /etc/systemd/system/bypay.service；本机部署用备份 → 构建 → systemctl restart bypay
 - 给 VPS Codex 的提示词必须自包含（ByPay_项目规划.md 第 8 节）：服务器上的代码可能比仓库旧，读不到新文档，所以所有命令、检查和期望值都写进提示词本身，不要让它先去读尚未更新到服务器的文件；写之前用 git log 核对服务器可能缺哪些提交
 - VPS 上不要修改仓库里受 git 跟踪的任何文件（包括 DEVELOPMENT_LOG.md 和 AGENTS.md）：本机改动过的文件会挡住 git 快进合并，也会让 ByPay.sh 菜单 5 停下来询问；VPS 上的部署记录写到仓库之外（/root/bingyun-backups/deploy-notes.md），由本机根据 VPS 的报告补记 DEVELOPMENT_LOG.md；VPS 上也不要做本地 git 提交，否则分支会与线上分叉，菜单 5 将无法自动更新
+
+支付宝二维码出图速度（根因、数据和验收见 ByPay_项目规划.md 第 14 节）
+- 网页支付的支付宝二维码要从支付宝收银台页面里取（web/cashier.py），微信在下单的返回里就有；慢在每次新建 TLS 连接，并且等收银台打开后才开始取。已有的做法不要改回去：
+  - 订单创建后立即在后台预取（web/cashier.py Prefetch；BYPAY_QR_PREFETCH，由 web/service.py 给网页进程默认打开、给 worker 进程关闭，env 文件写 0 可整体关闭）
+  - 所有取二维码的请求共用一个长连接池（CashierFetcher），每次取各用独立的 client，cookie 不在订单之间共享；下单后 10 分钟内由 Warmer 每 25 秒对两个支付宝域名各发一个 HEAD 保温，之后不再向支付宝发任何请求
+  - 取二维码同一时间只允许一个请求在飞：用 checkout_jobs 里的租约（Store.claim_qr / release_qr，跨 gunicorn 进程）；其他请求等待结果，不重复取，也不重复在支付宝创建交易
+  - prepare / 收银台状态接口直接返回成品图 `qr_svg`（前端用 data: 地址显示，不再请求 qr.svg）；支付宝以外的渠道和手机支付不变
+- 取收银台页面时重定向只能去 allowed_url 白名单，并且在发出请求之前检查；总时间、响应大小（含解压后）都有上限；不要改成跟随任意地址，不要读代理环境变量
+- 测试里默认不预取、不保温（测试和工具不能在没有明确要求时联系支付宝）；改动后运行 tests/test_cashier_speed.py 和 tools/smoke_epay.py（含“支付宝慢 1.5 秒 + 网络延迟 150 毫秒”的出图时间对比，预取必须更早出图）；smoke_ui / smoke_platform 现在按 data: 图片读取二维码

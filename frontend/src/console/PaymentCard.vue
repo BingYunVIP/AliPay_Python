@@ -9,7 +9,7 @@ import Icon from '../components/Icon.vue'
 // app and mini show the call parameters. The code never outlives the order.
 const props = defineProps({ order: { type: Object, required: true } })
 const now = ref(Date.now()), ready = ref(Boolean(props.order.cashier_qr) || props.order.product !== 'page')
-const preparing = ref(false), failed = ref(false), attempt = ref(0), copied = ref(false), zoom = ref(null)
+const preparing = ref(false), failed = ref(false), attempt = ref(0), copied = ref(false), zoom = ref(null), inline = ref('')
 let tick, copyTimer, disposed = false
 
 const channelName = computed(() => ({ alipay: t('支付宝', 'Alipay'), wechat: t('微信支付', 'WeChat Pay'), paypal: 'PayPal', stripe: 'Stripe' })[props.order.channel] || props.order.channel)
@@ -33,18 +33,19 @@ const parameters = computed(() => payload.value.kind === 'wechat_app' ? JSON.str
   : props.order.product === 'app' ? payload.value.order_string || ''
   : `my.tradePay({\n  tradeNO: ${JSON.stringify(payload.value.trade_no || props.order.trade_no || '')}\n})`)
 const parameterLabel = computed(() => ({ wechat_app: 'WeChat APP SDK', wechat_jsapi: 'wx.requestPayment' })[payload.value.kind] || (props.order.product === 'app' ? 'orderString' : 'my.tradePay'))
-const source = computed(() => `/api/v1/payments/${encodeURIComponent(props.order.out_trade_no)}/qr.svg?v=${attempt.value}`)
+// the finished image arrives with the answer that says the code is ready, so no second request is needed to show it
+const source = computed(() => inline.value ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(inline.value)}` : `/api/v1/payments/${encodeURIComponent(props.order.out_trade_no)}/qr.svg?v=${attempt.value}`)
 
 async function prepare() {
   if (phase.value !== 'waiting' || preparing.value || props.order.product !== 'page' || props.order.channel !== 'alipay') return
   preparing.value = true; failed.value = false
   try {
     const result = await api(`/api/v1/payments/${props.order.out_trade_no}/prepare-qr`, { method: 'POST', body: '{}' })
-    if (!disposed) { ready.value = Boolean(result.order?.cashier_qr); failed.value = !ready.value }
+    if (!disposed) { ready.value = Boolean(result.order?.cashier_qr); inline.value = result.qr_svg || ''; failed.value = !ready.value }
   } catch { if (!disposed) failed.value = true }
   finally { if (!disposed) preparing.value = false }
 }
-function retry() { attempt.value++; failed.value = false; if (!ready.value) prepare() }
+function retry() { attempt.value++; inline.value = ''; failed.value = false; if (!ready.value) prepare() }
 async function copy() {
   try { await copyText(parameters.value); copied.value = true; clearTimeout(copyTimer); copyTimer = setTimeout(() => { copied.value = false }, 2000) } catch { /* the text stays selectable */ }
 }

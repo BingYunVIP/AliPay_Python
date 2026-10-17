@@ -1,6 +1,6 @@
 """Repeatable browser smoke: real Pay/demo HTTP, fixture Alipay and an in-process WeChat Pay gateway, no real payment.
 
-The merchant demo page pays with Alipay (V1 and V2 signatures), then with WeChat Pay: first against a plain-http Pay site
+The merchant demo page pays with Alipay (V1 and V2 signatures) and shows how soon the Alipay QR appears when Alipay is slow, then pays with WeChat Pay: first against a plain-http Pay site
 address (the refusal the console shows locally), then against an https one with signed, encrypted WeChat notices.
 Run with a Python environment containing project requirements and Playwright.
 Only isolated temporary credentials/databases are created; live services are untouched.
@@ -14,8 +14,10 @@ import socket
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import urlsplit
 
 ROOT=Path(__file__).resolve().parents[1]
 # Local tooling can use the application's venv while Playwright lives in the host env
@@ -32,6 +34,7 @@ from playwright.sync_api import sync_playwright,expect
 from werkzeug.serving import make_server
 from werkzeug.serving import WSGIRequestHandler
 from web.app import create_app as create_pay
+from web.cashier import Prefetch
 from web.webhooks import deliver_one,validate_callback
 import connection as demo_connection
 from bypay.alipay_client import AlipayClient
@@ -144,6 +147,40 @@ def run():
                     expect(page.locator('#success-amount')).to_contain_text('0.01')
                     page.screenshot(path=str(evidence/f'{version}-verified-success.png'),full_page=True)
                     print(f'PASS {version}: configure, signed create, embedded platform QR, forged-browser-message rejection, signed callback, merchant success',flush=True)
+                # ---- how soon the Alipay QR appears when Alipay is slow (1.5 s here) and the network is not instant (150 ms per request, as to a distant server):
+                # asked as the order is made, or only when the cashier opens
+                link=context.new_cdp_session(page);link.send('Network.enable')
+                link.send('Network.emulateNetworkConditions',{'offline':False,'latency':150,'downloadThroughput':-1,'uploadThroughput':-1})
+                def slow_alipay(url,stats=None):
+                    slow.setdefault('started',[]).append(time.time());time.sleep(1.5)
+                    return 'https://qr.alipay.com/epay-smoke-slow'
+                def cashier_visit(mode):
+                    slow.clear();log=[]
+                    pay.extensions['qr_prefetch']=Prefetch(mode=='early')
+                    page.on('request',lambda request:log.append((time.time(),request.method,request.url)))
+                    with httpx.Client(trust_env=False,timeout=10) as client,patch('web.cashier.fetch_cashier_qr',side_effect=slow_alipay):
+                        newest=lambda:client.get(demo_origin+'/api/state').json()['orders'][0]
+                        previous=newest()['number'];begun=time.time();page.locator('#submit').click()
+                        while newest()['number']==previous:time.sleep(0.01)
+                        number=newest()['number']  # the iframe still shows the previous order until the new one has loaded: wait for this order's own number
+                        page.locator('#cashier').element_handle().content_frame().wait_for_function("""number => { const code = document.querySelector('img[alt="支付宝付款二维码"]'); return Boolean(document.body && document.body.innerText.includes(number) && code && code.complete && code.naturalWidth > 0) }""",arg=number,polling=10,timeout=20000)
+                        appeared=time.time();token=urlsplit(newest()['pay_url']).path.rsplit('/',1)[-1]
+                        pay.extensions['qr_prefetch'].wait()
+                    mine=[(moment,method,url) for moment,method,url in log if f'/api/cashier/{token}' in url]
+                    first=next(moment for moment,method,url in mine if method=='GET')
+                    return {'begun':begun,'visible':appeared-begun,'asked_alipay':slow['started'][0]-begun,'cashier_asked':first-begun,'calls':len(slow['started']),'images':[url for moment,method,url in mine if '/qr.svg' in url]}
+                slow={}
+                late=cashier_visit('late');early=cashier_visit('early')
+                link.send('Network.emulateNetworkConditions',{'offline':False,'latency':0,'downloadThroughput':-1,'uploadThroughput':-1})
+                assert late['calls']==1 and early['calls']==1,(late['calls'],early['calls'])  # one fetch per order either way: the cashier waited for the one in flight
+                assert late['asked_alipay']>=late['cashier_asked']-0.05,'without the early fetch Alipay is asked only after the cashier opens'
+                assert early['asked_alipay']<early['cashier_asked'],'with it, Alipay is already being asked when the cashier opens'
+                assert not late['images'] and not early['images'],(late['images'],early['images'])  # the image came with the answer: no second request for it
+                assert early['visible']<late['visible']-0.15,(early['visible'],late['visible'])
+                pay.extensions['qr_prefetch']=Prefetch(False)
+                page.screenshot(path=str(evidence/'alipay-qr-early.png'),full_page=True)
+                for name,run_ in (('asked at cashier open',late),('asked at order creation',early)):print(f"  {name}: Alipay asked at +{run_['asked_alipay']:.2f} s, cashier opened at +{run_['cashier_asked']:.2f} s, QR on screen at +{run_['visible']:.2f} s",flush=True)
+                print(f"PASS alipay QR with Alipay taking 1.5 s: on screen {early['visible']:.2f} s after the click when asked at order creation, {late['visible']:.2f} s when asked at cashier open; one fetch per order, no separate image request",flush=True)
                 # ---- WeChat Pay through the same page. Pay's WeChat channel is configured the way an administrator would (encrypted, validated)
                 pay_client=pay.test_client()
                 login=pay_client.post('/api/auth/login',json={'email':'fixture-admin','password':'Fixture-password-123'}).json

@@ -10,6 +10,7 @@ import tempfile
 import threading
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import unquote
 
 ROOT = Path(__file__).resolve().parents[1]
 packages = list((ROOT / '.venv/lib').glob(f'python{sys.version_info.major}.{sys.version_info.minor}/site-packages'))
@@ -83,7 +84,8 @@ def run():
                 page.goto(ORIGIN + '/dashboard?tab=testpay'); page.wait_for_load_state('networkidle'); expect(page.get_by_label('选择收款配置')).to_be_visible()
                 page.get_by_label('商品名称', exact=True).fill('浏览器测试商品'); page.get_by_role('button', name='创建支付订单', exact=True).click(); expect(page.locator('.payment-qr-card .qr-expand img')).to_be_visible(timeout=15000)
                 expect(page.locator('.qr-receipt-header')).to_contain_text('支付宝'); expect(page.locator('.qr-receipt-header')).to_contain_text('0.01'); expect(page.locator('.qr-countdown')).to_be_visible()
-                svg = page.request.get(ORIGIN + page.locator('.payment-qr-card .qr-expand img').get_attribute('src')).text()
+                source = page.locator('.payment-qr-card .qr-expand img').get_attribute('src')  # a website order's image comes inline with the answer
+                svg = unquote(source.split(',', 1)[1]) if source.startswith('data:image/svg+xml') else page.request.get(ORIGIN + source).text()
                 check('Alipay QR is a branded svg', '<svg' in svg and '#075fbd' in svg)
                 page.goto(ORIGIN + '/dashboard?tab=orders'); page.wait_for_load_state('networkidle'); page.get_by_label('支付场景筛选').select_option('page'); expect(page.get_by_role('option', name='全部渠道', exact=True)).to_have_count(1)
                 page.get_by_role('button', name='全选', exact=True).click()

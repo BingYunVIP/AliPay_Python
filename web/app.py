@@ -105,6 +105,12 @@ def create_app(settings=None):
     operations=Operations(store,mailer,trace)
     antibot=AntiBot(store,merchants.cipher)
     app.extensions.update(mailer=mailer,operations=operations,antibot=antibot)
+    from .cashier import Prefetch, Warmer, _fetcher
+    qr_early = str(app.config.get("BYPAY_QR_PREFETCH", "")).lower() in {"1", "true", "yes", "on"}
+    app.extensions["qr_prefetch"] = Prefetch(qr_early)
+    # only the service's web processes turn this on: they keep the connections to Alipay open for a few minutes after a website order
+    app.extensions["qr_warmer"] = Warmer(_fetcher.warm, store.latest_page_order)
+    if qr_early: app.extensions["qr_warmer"].start()
     secure = app.config["PUBLIC_BASE_URL"].startswith("https://")
     cookie_name = "__Host-bypay_session" if secure else "bypay_session"
     origin = app.config["PUBLIC_BASE_URL"].rstrip("/")
@@ -449,11 +455,62 @@ def create_app(settings=None):
     def prepare_qr(number):
         return prepare_qr_request(number, json_body() if request.content_length else {})
 
-    def prepare_qr_request(number, payload):
+    QR_WAIT_SECONDS = float(app.config.get("QR_WAIT_SECONDS", 14))  # how long a cashier waits for a fetch that is already running
+
+    def alipay_checkout_urls(order, browser_origin):
+        """The two signed website-checkout URLs of an order: the default one, and Epay::qrcodepc's embedded-QR mode (4)."""
+        qr_cfg = channels.payment_config(order)
+        old_return = urlsplit(qr_cfg["return_url"])
+        if app.config.get("BYPAY_RUN_MODE") == "local" and old_return.hostname in {"localhost", "127.0.0.1", "::1"} and browser_origin in browser_origins:
+            qr_cfg["return_url"] = browser_origin + old_return.path + ("?" + old_return.query if old_return.query else "")
+        qr_cfg["time_expire"] = datetime.fromtimestamp(order["expires_at"], ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S")
+        number = order["out_trade_no"]
+        # the order number, amount and deadline stay fixed; only the QR mode differs
+        checkout_url = client(qr_cfg).create_page_pay_url(number, order["amount"], order["subject"])
+        embedded = client({**qr_cfg, "qr_pay_mode": "4", "qrcode_width": 230}).create_page_pay_url(number, order["amount"], order["subject"])
+        return qr_cfg, checkout_url, embedded
+
+    def qr_job(order, source, browser_origin=None, user_id=None):
+        """Ask Alipay for the order's website-checkout QR and keep it. One caller at a time does the asking (the prefetch that
+        started with the order, or a cashier); every other caller waits for that answer instead of asking Alipay a second time."""
         from .cashier import fetch_cashier_qr
+        number, user_id = order["out_trade_no"], user_id or order["user_id"]
+        begun = time.monotonic()
+        lease = store.claim_qr(number)
+        waited = lease is None
+        while not lease:
+            while store.qr_busy(number) and time.monotonic() - begun < QR_WAIT_SECONDS: time.sleep(.05)
+            current = store.order(number)
+            if current["cashier_qr"]: return current["cashier_qr"]
+            # the other attempt ended without a QR (or its lease ran out): take over; a try has a hard deadline of its own (web/cashier.py TOTAL_SECONDS)
+            if time.monotonic() - begun >= QR_WAIT_SECONDS: raise ApiError("cashier_qr_unavailable", 502)
+            lease = store.claim_qr(number)
+        try:
+            trace("checkout.qr", "cashier_qr_requested", {"source": source}, number, user_id)
+            stats = {}
+            qr_cfg, checkout_url, embedded = alipay_checkout_urls(order, browser_origin or origin)
+            value = fetch_cashier_qr(embedded, stats)
+            with store.connect() as db: db.execute("UPDATE orders SET cashier_qr=?,pay_url=?,provider_return_url=? WHERE out_trade_no=?", (value, checkout_url, qr_cfg["return_url"], number))
+            trace("checkout.qr", "cashier_qr_ready", {"source": "alipay_website_checkout", "fetched_by": source, "waited": waited, "elapsed_ms": int((time.monotonic() - begun) * 1000), **stats}, number, user_id)
+            return value
+        except Exception as exc:
+            trace("checkout.qr", "cashier_qr_unavailable", {"exception_type": type(exc).__name__, "fetched_by": source, "check": str(exc) if isinstance(exc,ValueError) and str(exc).startswith("cashier_") else "provider_request_failed"}, number, user_id, False)
+            raise ApiError("cashier_qr_unavailable", 502) from None
+        finally:
+            store.release_qr(number, lease)
+
+    def prefetch_qr(number):
+        order = store.order(number)
+        if order and not order["cashier_qr"] and order["status"] == "CREATED" and order["expires_at"] > int(time.time()): qr_job(order, "prefetch")
+
+    def qr_response(order):
+        from .cashier import qr_inline
+        return jsonify(order=public_order(order), qr_svg=qr_inline(order))
+
+    def prepare_qr_request(number, payload):
         order = owned_order(number)
         if set(payload) - {"refresh", "native"} or any(type(payload[k]) is not bool for k in payload): raise ApiError("invalid_json")
-        if order["cashier_qr"] and not payload.get("refresh") and not payload.get("native"): return jsonify(order=public_order(order))
+        if order["cashier_qr"] and not payload.get("refresh") and not payload.get("native"): return qr_response(order)
         if order["product"] != "page" or order["status"] != "CREATED" or order["expires_at"] <= int(time.time()): raise ApiError("qr_not_available", 422)
         limit("cashier:" + number, 3, 60)
         if payload.get("refresh"):
@@ -461,29 +518,19 @@ def create_app(settings=None):
             if order["status"] != "CREATED": return jsonify(order=public_order(order))
         if order["channel"] == "wechat":
             return jsonify(order=public_order(store.order(number)))  # a WeChat Native code stays valid for the whole payment window
-        trace("checkout.qr", "cashier_qr_requested", number=number, user_id=g.user["id"])
-        try:
-            qr_cfg = channels.payment_config(order)
-            old_return = urlsplit(qr_cfg["return_url"])
-            browser_origin = request.headers.get("Origin", origin)
-            if app.config.get("BYPAY_RUN_MODE") == "local" and old_return.hostname in {"localhost", "127.0.0.1", "::1"} and browser_origin in browser_origins:
-                qr_cfg["return_url"] = browser_origin + old_return.path + ("?" + old_return.query if old_return.query else "")
-            qr_cfg["time_expire"] = datetime.fromtimestamp(order["expires_at"], ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S")
-            # Epay::qrcodepc requests the embedded QR mode (4), not the default
-            # browser-session QR; the order number, amount and deadline stay fixed.
-            checkout_url = client(qr_cfg).create_page_pay_url(number, order["amount"], order["subject"])
-            embedded = client({**qr_cfg, "qr_pay_mode":"4", "qrcode_width":230}).create_page_pay_url(number, order["amount"], order["subject"])
-            if payload.get("native"):
-                with store.connect() as db: db.execute("UPDATE orders SET pay_url=?,provider_return_url=? WHERE out_trade_no=?", (checkout_url,qr_cfg["return_url"],number))
-                trace("checkout.qr", "cashier_frame_ready", {"mode":"4","width":230}, number,g.user["id"])
-                return jsonify(order=public_order(store.order(number)),cashier_url=embedded)
-            value = fetch_cashier_qr(embedded)
-        except Exception as exc:
-            trace("checkout.qr", "cashier_qr_unavailable", {"exception_type": type(exc).__name__, "check": str(exc) if isinstance(exc,ValueError) and str(exc).startswith("cashier_") else "provider_request_failed"}, number, g.user["id"], False)
-            raise ApiError("cashier_qr_unavailable", 502) from None
-        with store.connect() as db: db.execute("UPDATE orders SET cashier_qr=?,pay_url=?,provider_return_url=? WHERE out_trade_no=?", (value, checkout_url, qr_cfg["return_url"],number))
-        trace("checkout.qr", "cashier_qr_ready", {"source": "alipay_website_checkout"}, number, g.user["id"])
-        return jsonify(order=public_order(store.order(number)))
+        browser_origin = request.headers.get("Origin", origin)
+        if payload.get("native"):
+            trace("checkout.qr", "cashier_qr_requested", number=number, user_id=g.user["id"])
+            try:
+                qr_cfg, checkout_url, embedded = alipay_checkout_urls(order, browser_origin)
+            except Exception as exc:
+                trace("checkout.qr", "cashier_qr_unavailable", {"exception_type": type(exc).__name__, "check": "provider_request_failed"}, number, g.user["id"], False)
+                raise ApiError("cashier_qr_unavailable", 502) from None
+            with store.connect() as db: db.execute("UPDATE orders SET pay_url=?,provider_return_url=? WHERE out_trade_no=?", (checkout_url, qr_cfg["return_url"], number))
+            trace("checkout.qr", "cashier_frame_ready", {"mode": "4", "width": 230}, number, g.user["id"])
+            return jsonify(order=public_order(store.order(number)), cashier_url=embedded)
+        qr_job(order, "request", browser_origin, g.user["id"])
+        return qr_response(store.order(number))
 
     @app.post("/api/v1/payments/<number>/checkout-opened")
     @auth(session_only=True)
@@ -625,12 +672,13 @@ def create_app(settings=None):
         trace("sdk.link", "checkout_url_signed", {"method": "alipay.trade." + payload["product"] + ".pay",
               "response_type": "URL string", "gateway": parsed_url.scheme + "://" + parsed_url.netloc + parsed_url.path,
               "parameter_names": sorted(query), "notify_url": order_cfg["notify_url"], "return_url": return_base,
-              "note": "仅本地签名，尚未向支付宝请求。用户打开收银台后，支付宝才可能创建交易。"}, number, g.user["id"])
+              "note": "此刻仅本地签名；随后由后台预取，或用户打开收银台时，才会向支付宝请求二维码，支付宝才可能创建交易。"}, number, g.user["id"])
         try:
             order = store.create_order(g.user["id"], payload, pay_url, order_cfg, return_token, {"kind": "url", "url": pay_url}, request_hash)
         except sqlite3.IntegrityError:
             return replay(store.order(number))
         trace("create.saved", "order_saved", {"status": order["status"], "amount": amount}, number, g.user["id"])
+        if payload["product"] == "page": app.extensions["qr_prefetch"].submit(prefetch_qr, number)  # Alipay is asked for the QR while the cashier is still loading
         return jsonify(order=public_order(order)), 201
 
     @app.post("/api/v1/payments/<number>/sync")

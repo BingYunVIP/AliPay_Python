@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import base64
 import re
+from functools import lru_cache
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -104,6 +105,7 @@ def load_private_key(raw: str):
     return key
 
 
+@lru_cache(maxsize=8)  # loading and re-encoding a 2048-bit key takes ~25 ms, and every Alipay request builds a client with it
 def normalize_private_key(raw: str) -> str:
     """把任意形式的应用私钥统一为 PKCS#1 PEM。
 

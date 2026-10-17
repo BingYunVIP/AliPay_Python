@@ -278,3 +278,59 @@ VPS Codex 在第 5 步（快进合并）停下：服务器上的 DEVELOPMENT_LOG
 1. VPS 更新完成后，在微信公众平台绑定 JS 安全域名 pay.bingyun.vip：先在浏览器打开 https://pay.bingyun.vip/MP_verify_YIZThTeg958vnQzp.txt 应看到 YIZThTeg958vnQzp；当前的扫码、H5 支付本身不需要这个域名
 2. 线上控制台：系统管理 → 站点与订单 → 域名与通知的站点地址是 https://pay.bingyun.vip；收款渠道 → 微信支付 → 配置渠道填写 7 项参数（本机数据库不会同步到 VPS），再点“检查配置”（会真实联系微信）
 3. 打开 https://test.bingyun.vip，选择“微信支付”，下单并用手机微信扫码支付 0.01 元，确认测试站订单变为支付成功；退款是否测试由你决定
+
+## 2026-10-17 · 真实验收记录与支付宝二维码出图速度
+
+### 问题与根因
+
+- 用户在 VPS 上用真实资金验收了微信支付和支付宝（付款、回调、退款），并反馈：支付宝网页支付的二维码比微信支付的出得慢，要求只优化这一项
+- 微信 Native 的 code_url 在下单的返回里，打开收银台时二维码已经在订单里；支付宝网页支付（page.pay，qr_pay_mode=4）下单只在本地签名，二维码要等收银台打开后由服务端去支付宝收银台页面里取：openapi.alipay.com 网关 → 302 → excashier.alipay.com，页面里的隐藏输入 qrCode；urllib 每一跳都新建 TLS 连接，而且取码从收银台打开才开始
+- 量级（本机到支付宝公网域名的 curl，只请求首页，没有下单）：新连接 openapi 约 0.33 s、excashier 约 0.69 s；复用连接约 0.084 s、0.231 s；每次 prepare 把商户私钥规范化两次（各约 26 ms）；渲染二维码约 4 ms；本机 prepare-qr 自身约 90 ms，所以时间花在等支付宝，不在渲染
+- 本机数据库里更新前 3 个支付宝网页订单：cashier_qr_requested 到 cashier_qr_ready 相隔 4、2、3 秒（事件精确到秒，只是量级）
+
+### 参考实现
+
+- Epay/plugins/alipay/alipay_plugin.php::qrcodepc：pagePay 生成已签名的地址，同步 get_curl 取收银台页面，正则取 qrCode；同样是收银台请求时才取、每次新建连接，没有预取和连接复用，所以这一块不是照搬，而是在保持“网页支付、不调用 precreate”这个产品不变的前提下改取码的时机和连接
+- 微信 Native 作速度对照（二维码在下单返回里）
+
+### 修改
+
+- web/cashier.py：取页面改用 httpx 共享长连接池（每次取各用独立 client，cookie 不在订单之间共享；trust_env=False，certifi 校验；limits 8/6，空闲 45 s）；重定向手动逐跳跟随，每个地址发出请求前过 allowed_url 白名单；总期限 12 s（每个请求只拿剩余时间，读页面时也检查）、累计 1.5 MB、Accept-Encoding: identity、重定向正文最多读 64 KiB、最多 7 次请求；连接被支付宝提前关闭时只重试一次；新增 Prefetch（线程池 4、积压上限 32，失败只记 qr_prefetch_failed）、Warmer（下单后 10 分钟内每 25 秒对用过的支付宝域名各发一个 HEAD）、qr_inline（只对有效的支付宝网页订单生成成品图）
+- web/app.py：订单创建后（仅 product=page）提交预取；qr_job 单飞（其他请求等待结果，失败后接手，等待上限 14 s）；prepare-qr 已有二维码时直接返回；响应带成品图 qr_svg；订单创建的审计说明改为“此刻仅本地签名；随后由后台预取，或用户打开收银台时，才会向支付宝请求二维码，支付宝才可能创建交易”
+- web/store.py：claim_qr / qr_busy / release_qr（checkout_jobs 租约，25 s，跨 gunicorn 进程）、latest_page_order（保温窗口依据）；没有改表结构
+- web/epay.py：收银台 prepare 和带 ?qr=1 的状态接口返回 qr_svg；web/service.py：BYPAY_QR_PREFETCH 对网页进程默认 1、对 worker 进程固定 0，env 文件写 0 可整体关闭；bypay/key_utils.py：normalize_private_key 结果缓存（8 个，失败不缓存）
+- frontend：Cashier.vue、console/PaymentCard.vue 用 data: 地址显示 qr_svg，不再请求 qr.svg
+- 测试和工具默认不预取、不保温（不会在没有要求时联系支付宝）
+- tools/smoke_epay.py 新增“支付宝慢 1.5 秒 + 浏览器网络延迟 150 毫秒”的出图时间对比；tools/smoke_ui.py、tools/smoke_platform.py 改为按 data: 地址读取付款卡片的二维码图片
+- 文档：ByPay_项目规划.md 第 13 节（真实验收记录）、第 14 节（本次提速）、第 6、7、8 节更新；AGENTS.md 增加“支付宝二维码出图速度”规则
+
+### 测试与本机验证
+
+- 主站 314 项通过（新增 tests/test_cashier_speed.py 46 项）、测试站 31 项通过、ZIP 校验一致；四套真实浏览器冒烟（smoke_ui、smoke_platform、smoke_epay 8 项、smoke_wechat）0 失败
+- smoke_epay 的出图对比（进程内模拟“支付宝要 1.5 秒”，浏览器网络延迟 150 毫秒）：打开收银台才取——支付宝在 +1.03 s 被询问，二维码在 +2.55 s 出现；下单时就取——支付宝在 +0.20 s 被询问，二维码在 +1.73 s 出现，早约 0.8 s；断言一单只向支付宝取一次、没有单独的 qr.svg 请求
+- 新测试覆盖：抓取器（白名单在发请求之前检查、7 次请求上限、总期限、压缩、慢速滴灌、过大响应、重定向正文上限、过期连接重试、cookie 隔离、真实连接池的证书校验和空闲限制）、预取与保温（开关、窗口、积压上限、失败不外泄）、单飞租约（只请求一次、等待者拿到结果、失败后接手、等待上限）、端点（成品图只对有效的支付宝网页订单返回）、服务进程环境（web 1 / worker 0 / env 文件写 0）、密钥缓存（失败不缓存）
+- 对 21 处保护逐一做了变异检查（涉及 web/cashier.py、web/store.py、web/app.py、web/epay.py、web/service.py、bypay/key_utils.py），去掉任何一处对应测试都失败，改动的文件都已核对恢复为原样
+- 另一个代理独立评审（约 40 分钟）：提出的问题都是低风险——重定向响应的正文不受限、压缩响应、慢速滴灌、过强的接手保护、不准确的审计说明、测试缺口——均已修复并有测试
+- 没有联系支付宝或微信：没有真实付款、退款，没有创建订单，没有点击“检查配置”
+
+### 真实验收记录（用户在 VPS 上执行，以下来自用户和 VPS Codex 的汇报，我没有直接访问 VPS；订单号和平台流水号留在 VPS 的数据库和事件日志里，不写进仓库）
+
+- VPS 更新：主站快进到 b7faa81，部署成功，bypay active，health 正常；更新前后用户哈希和数量一致，订单与已付数没有减少，integrity ok，ByPay.sh 菜单 5 可用且显示已是最新版本，仓库工作区干净；测试站已更新为可选支付宝或微信支付
+- 微信支付：测试站选择微信支付、0.01 元，网页扫码；Pay 订单 PAID，微信支付通知验签通过，向测试站的业务回调 HTTP 200，测试站以 notify.verified 确认到账
+- 支付宝：测试站选择支付宝、0.01 元，扫码；测试站先通过服务端查询确认，随后 TRADE_SUCCESS 通知验签通过，业务回调 HTTP 200，之后重复的通知按幂等处理
+- 退款：用户反馈支付宝和微信支付的退款都已测试通过（订单号和金额未提供，以 VPS 的 refunds 表和事件日志为准）
+- 这是“真实付款已验收”，不是审计通过
+
+### 本机部署与清理
+
+- 部署前用 backup 命令备份真实库：data/local/backups/update-20261017T084410Z（2 个用户、15 笔订单、6 笔已付，含密钥和配置）；订单数比上一轮多 1 笔：未付款的支付宝网页订单，由控制台在 06:56 UTC 创建，不是本轮自动化测试创建的（测试和冒烟都用临时数据库）
+- 构建 frontend/dist 并 systemctl restart bypay：用户、订单、渠道配置摘要和已付数与部署前完全一致，integrity_check ok；web 进程的 BYPAY_QR_PREFETCH 为 1，worker 进程为 0（只读取这一个变量）；管理员登录后概览、渠道、诊断、事件、任务（ledger_balanced 为 true）、结算接口都是 200；验证文件 200、16 字节；真实浏览器登录后打开订单、渠道、设置页面没有错误（只有登录页询问会话时预期的一次 /api/auth/me 401）；journalctl 没有警告；没有创建订单
+- 清理：6 个 __pycache__ 目录（1539210 字节，记录在 data/maintenance/cleanup-20261017T084608Z.json）；删除早于最近两代的备份 pre-wechat-admin-20261017T050855（记录在 data/maintenance/backup-cleanup-20261017T084634.json），保留 update-20261017T052146Z 和 update-20261017T084410Z；/tmp 下的构建目录、冒烟产物、基准和变异检查脚本；data/logs 与 data/local/logs 没有手工修剪
+
+### 发布与剩余验收
+
+已本机验证并部署；已提交并推送到 origin/main（提交号以 git log 为准）；VPS 尚未更新本轮：按 ByPay_项目规划.md 第 8 节的提示词，由 VPS Codex 用菜单 5 更新主站（测试站本轮没有改动）；真实付款已验收（支付宝、微信支付，由用户报告）；支付宝二维码提速的真实耗时还没有在 VPS 上测量，上面的数字是本机估计和进程内替身的对比
+你需要做的验收：
+1. 把第 8 节提示词交给 VPS Codex，等它报告更新结果
+2. 它报告后，打开 https://test.bingyun.vip，选择支付宝，点“下单并打开收银台”，连续下 2 单（不用付款），看二维码出现得是否比以前快；再回复“已下单”，让它读取事件日志对比耗时（fetched_by 为 prefetch 的 cashier_qr_ready，elapsed_ms 就是下单到取到二维码的时间）
+3. 如果支付宝页面出错变多，在主站 .env 里加一行 BYPAY_QR_PREFETCH=0 再重启 bypay，就回到“打开收银台时才取”

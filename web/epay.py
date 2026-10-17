@@ -203,17 +203,20 @@ def install_epay(app, merchants, auth, trace, create_payment, prepare_qr, ApiErr
         g.user={'id':order['user_id'],'role':'user'}
         return record,order
 
-    def view(record,order):
+    def view(record,order,inline=False):
+        from .cashier import qr_inline
         expired=order['status']=='CREATED' and order['expires_at']<=int(time.time())
-        return {'trade_no':record['platform_no'],'out_trade_no':record['merchant_no'],'subject':order['subject'],
+        data={'trade_no':record['platform_no'],'out_trade_no':record['merchant_no'],'subject':order['subject'],
                 'amount':order['amount'],'channel':order['channel'],'status':'EXPIRED' if expired else order['status'],
                 'paid':bool(order['paid_at']),'expires_at':order['expires_at'],'qr_ready':bool(order['cashier_qr']),
                 'return_available':bool(record['return_url']), 'parent_origins':frame_origins(order['notify_url']), 'parent_origin':urlsplit(order['notify_url']).scheme+'://'+urlsplit(order['notify_url']).netloc}
+        if inline: data['qr_svg']=qr_inline(order)  # the finished image, so that the page needs no second request for it
+        return data
 
     @app.get('/api/cashier/<token>')
     def checkout_state(token):
         record,order=checkout(token)
-        return jsonify(view(record,order))
+        return jsonify(view(record,order,inline=request.args.get('qr')=='1'))
 
     @app.post('/api/cashier/<token>/prepare')
     def checkout_prepare(token):
@@ -223,7 +226,7 @@ def install_epay(app, merchants, auth, trace, create_payment, prepare_qr, ApiErr
         if not isinstance(payload,dict) or set(payload)-{'refresh'}: raise ApiError('invalid_json')
         if not order['paid_at']:
             prepare_qr(order['out_trade_no'],payload)
-        return jsonify(view(record,store.order(order['out_trade_no'])))
+        return jsonify(view(record,store.order(order['out_trade_no']),inline=True))
 
     @app.get('/api/cashier/<token>/qr.svg')
     def checkout_qr(token):

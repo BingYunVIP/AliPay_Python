@@ -92,7 +92,7 @@ https://service.mail.qq.com/detail/0/75
 
 ## 6. 本轮状态
 
-本轮核心实现、268 项主站测试、31 项测试站测试和四套浏览器冒烟（smoke_ui / smoke_platform / smoke_epay / smoke_wechat）已通过；本机已更新，已推送到 origin/main；VPS 与外部服务真实验收待执行（含微信真实付款），具体证据见 DEVELOPMENT_LOG.md
+314 项主站测试、31 项测试站测试和四套浏览器冒烟（smoke_ui / smoke_platform / smoke_epay / smoke_wechat）已通过；本机已更新；支付宝和微信支付的付款、回调、退款已在 VPS 上用真实资金验收（第 13 节，来自用户和 VPS Codex 的报告）；支付宝二维码出图提速（第 14 节）已在本机验证并随本轮提交推送，VPS 需要按第 8 节更新后才生效，真实耗时待更新后在 VPS 上测量；SMTP、Turnstile、PayPal、Stripe 的真实验收仍待执行，具体证据见 DEVELOPMENT_LOG.md
 本文件是实施规划和验收清单，不是“审计通过”证明
 
 
@@ -114,7 +114,7 @@ https://service.mail.qq.com/detail/0/75
 
 ### 尚未完成或不能冒充完成的项目
 
-- 微信支付已按 APIv3 接通，但还没有用真实商户号付过款或退过款（验证用的是进程内模拟网关和 PHP SDK 交叉验签）；PayPal、Stripe 真实创建/退款/回调/对账和自动渠道分账仍属于后续阶段
+- 支付宝和微信支付都已在 VPS 上用真实商户号完成 0.01 元付款、回调和退款验收（第 13 节，由用户执行并报告）；微信仍只支持公钥模式；PayPal、Stripe 真实创建/退款/回调/对账和自动渠道分账仍属于后续阶段
 - 渠道实际费率、通道利润计提尚未接入对账单；本轮邀请基数仅支持订单金额或平台服务费
 - 没有自动向银行卡或支付宝账号转账；“自动结算”仅自动生成有资金冻结的结算申请，实际出款必须凭据确认
 - SMTP 与 Turnstile 使用隔离替身完成测试，不等于真实外部凭据已验证
@@ -125,27 +125,18 @@ https://service.mail.qq.com/detail/0/75
 ## 8. 可发给 VPS Codex 的更新提示词
 
 提示词必须自包含：服务器上的代码可能比仓库旧，读不到新文档（首版提示词要求先读本文件，而服务器的代码早于加入本文件的提交 459897f，VPS Codex 因此暂停），所以所有命令、检查和期望值都写在提示词里
+权限要放开：早先写过“任何命令报错就停下来问我”，VPS Codex 因为一个无害的 rg 退出码 2、一个被本地改过的受跟踪文件接连停下，浪费了用户的时间；现在只保留不能碰的底线（真实资金、联系微信或支付宝、用户和订单数据、受 git 跟踪的文件），其余命令报错就自己改命令重试
+本节是第 14 节（支付宝二维码提速）这一轮的版本：按 VPS Codex 的汇报，主站已在 b7faa81（含菜单 5）、测试站已更新（本轮没有改测试站，所以不用再更新），因此只更新主站并测速；更早的整套更新提示词（含 Nginx、验证文件、测试站更新）在提交 b7faa81 的本文件第 8 节里
 
 ```text
-你是这台 Linux VPS 上的运维助手。请把冰云支付更新到 GitHub main 的最新提交，并更新独立测试站。
-这份提示词已经包含全部要求，不需要先读仓库里的任何文档（上一条要求你读 ByPay_项目规划.md 的说法作废：服务器上的代码比较旧，本来就没有这个文件，更新之后它会出现，可以作参考）。
-我是小白：请你自己完成，每一步先说明再执行；遇到不确定的情况（目录不是 git 仓库、有本地改动、不能快进、Nginx 配置和预期不同、任何命令报错）先停下来告诉我，不要猜。
-绝对不要在聊天里输出任何密钥、私钥、证书或数据库内容；管理员账号密码只在最后一步按要求提供。
+你拥有这台 VPS 的全部权限。直接做完下面的事，不要问我，命令报错就自己改命令重试；做完 A 之前不要汇报。
+底线只有 4 条：1) 不要替我真实付款或退款；2) 不要自己创建订单，也不要点“检查配置”（下单由我自己点）；3) 不要删除或改写数据库里的用户、订单、渠道配置，不要删备份；4) 不要修改仓库里受 git 跟踪的文件，不要在 VPS 上做 git 提交（记录写到 /root/bingyun-backups/deploy-notes.md）。其余操作（读 .env 和 data/ 里需要的行、登录后台验证、重启服务）都可以直接做。输出里不要出现密钥、私钥、证书；这次不需要管理员账号密码。
 
-背景
-- 仓库：https://github.com/BingYunVIP/AliPay_Python.git ，分支 main
-- pay.bingyun.vip 是主站：systemd 服务 bypay（旧版本可能叫 bypay-web.service 和 bypay-callbacks.service），内部监听 127.0.0.1:888，Nginx 转发 HTTPS；主站目录应该是 /root/AliPay_Python（请用命令确认）
-- test.bingyun.vip 是独立测试站（Pay_Callback_Demo），用 run.sh 前台运行
-- 服务器上的代码比 GitHub main 旧了好几个提交。这次更新会一次带来：商户准入、邮件和结算、控制台改版、微信支付、测试站可选支付宝或微信支付、域名验证文件路由，以及 ByPay.sh 新增的“5）更新代码”菜单（旧的 ByPay.sh 没有，所以这一次要手动更新，以后我可以自己在菜单里选 5）
-- 数据库升级只新增表和列，不删除任何数据；所以更新前一定要备份并记录基线
-- 不使用 Docker；除非下面明确要求，不要改 Nginx / Cloudflare；不要做真实付款、真实退款、真实出款；不要创建微信订单，也不要点击“检查配置”（它们会真实联系微信）
-- 仓库里的 AGENTS.md 会要求“在 DEVELOPMENT_LOG.md 记录部署状态”，那是写给本机开发环境的；在 VPS 上不要改它，部署记录写到 /root/bingyun-backups/deploy-notes.md
+这次更新只做一件事：让支付宝二维码出得更快（订单创建后立刻在后台向支付宝取二维码，并复用与支付宝的连接，打开收银台时直接用现成的二维码）。主站在 /root/AliPay_Python（systemd 服务 bypay，内部 127.0.0.1:888）；测试站（/root/Pay_Callback_Demo，tmux 会话 bingyun-merchant-demo）这次没有改动，不用更新。
 
-A. 只读检查（这一阶段不改任何东西）
-1. 主站目录：systemctl show bypay.service --property=WorkingDirectory --value（没有就查 bypay-web.service）；确认它是 git 仓库（git remote -v 指向上面的地址），git branch --show-current 是 main（不是就停下来），记下更新前的提交号 git rev-parse HEAD；用 df -h 确认磁盘剩余空间足够（至少 1 GB）
-2. 找到测试站：ps -ef | grep -E 'serve.py|Pay_Callback_Demo'，用 readlink /proc/<进程号>/cwd 确认目录，并记下它是怎么启动的（tmux、screen、nohup 或 systemd），后面要用同样的方式重启
-3. 在主站目录运行 git status --short。如果受 git 跟踪的文件有本地改动：先把 git diff 保存成补丁文件，再把每个改动过的文件各存一份完整副本（都放在 /root/bingyun-backups/ 下，不要放进仓库），并告诉我。如果改动的只是 DEVELOPMENT_LOG.md 这类以前部署时写的记录，确认两份备份都在之后，可以用 git restore <文件> 只撤销这一个文件的修改（不要用 reset --hard），再把你新增的记录整理到 /root/bingyun-backups/deploy-notes.md（里面如果有密码、密钥、令牌就不要写进去也不要显示，只告诉我有这类内容）；其他文件有改动就停下来问我。从现在起，在 VPS 上不要修改仓库里受 git 跟踪的任何文件，也不要做本地 git 提交（否则分支会与 GitHub 分叉，以后菜单 5 无法自动更新），部署记录一律写到 /root/bingyun-backups/deploy-notes.md
-4. 记录更新前的基线（只读，只记数字和哈希）。数据库文件是 .env 里 DATABASE 指定的文件（只读取这一行，不要显示 .env 的其他内容），通常是 <主站目录>/data/web.sqlite3。把路径填进下面的脚本运行，并记下输出：
+A. 更新
+1. cd /root/AliPay_Python；git status --short 应为空（不为空：把文件名写进最终报告，跳过更新，不要硬来）；记下 git rev-parse --short HEAD 和 systemctl is-active bypay
+2. 只读取 .env 里 DATABASE= 这一行得到数据库路径，填进下面的脚本并记下输出（更新前后各运行一次）：
    python3 - <<'EOF'
    import hashlib, sqlite3
    path = "<数据库文件路径>"
@@ -155,35 +146,28 @@ A. 只读检查（这一阶段不改任何东西）
    print("orders", db.execute("SELECT COUNT(*) FROM orders").fetchone()[0], "paid", db.execute("SELECT COUNT(*) FROM orders WHERE paid_at IS NOT NULL").fetchone()[0])
    print("integrity", db.execute("PRAGMA integrity_check").fetchone()[0])
    EOF
-   同时记下 systemctl is-active bypay 的结果
+3. printf '5\n\n0\n' | ./ByPay.sh —— 菜单 5 会自己备份、只做快进合并、部署，部署失败会自动回到旧版本。输出“更新完成”就继续；输出“已是最新版本”就先 git fetch origin，再看 git log --oneline -3 origin/main 是否真的没有新提交（有新提交却说已是最新，把输出写进报告）；菜单 5 失败或回滚：把完整输出写进报告，再手动做 git fetch origin && git merge --ff-only origin/main && .venv/bin/python -m web.management backup && printf '1\ny\n0\n' | ./ByPay.sh；不能快进就写进报告，不要 reset --hard
+4. 验证：git rev-parse HEAD 等于 git rev-parse origin/main；systemctl is-active bypay 是 active；curl -s http://127.0.0.1:888/health 正常；再运行一次第 2 步的脚本：integrity 必须是 ok，users 的数量和哈希必须与更新前相同，orders 和 paid 不能减少；journalctl -u bypay -n 60 --no-pager 里没有 Traceback；只读取 .env 里 BYPAY_QR_PREFETCH 这一行：没有这一行就是默认开启（正常），写着 0 就是被关掉了（写进报告）；curl -sI https://pay.bingyun.vip/login 里 Content-Security-Policy 头应该只有一条（Nginx 或 Cloudflare 不应再加一条，否则浏览器可能拦住 data: 形式的二维码图片），多了就写进报告，不要改 Nginx
+5. 用管理员登录做一次快速检查：账号密码在数据库所在目录的 .admin-credentials（JSON，字段 account 和 password，不要显示）；POST https://pay.bingyun.vip/api/auth/login（请求头带 Origin: https://pay.bingyun.vip，JSON 是 {"email": 账号, "password": 密码}，保存 cookie），再 GET /api/auth/me、/api/console/overview、/api/admin/diagnostics、/api/admin/tasks 都应是 200，/api/admin/tasks 返回里的 ledger_balanced 必须是 true；再 curl -s https://test.bingyun.vip/ 确认页面里仍有“支付方式”和“微信支付”
 
-B. 更新主站（pay.bingyun.vip）
-5. git fetch origin，然后确认本地没有 GitHub 上没有的提交：git rev-list --count origin/main..HEAD 必须是 0（否则停下来报告）；再执行 git merge --ff-only origin/main；不能快进或被本地改动挡住，就停下来报告，不要 reset --hard，不要强制
-6. 服务此时还在运行旧代码。立刻用新代码里的备份命令做备份：在主站目录运行 .venv/bin/python -m web.management backup（SQLite 在线备份、密钥和配置，放在数据库所在目录的 backups/update-<时间>/）；它失败就停下来，不要继续部署；报告备份位置和里面的用户数、订单数
-7. 运行 printf '1\ny\n0\n' | ./ByPay.sh（菜单 1 部署，问是否创建并启用系统服务时回答 y）；它会安装依赖、构建网页、迁移数据库并重启 bypay；保持内部监听 127.0.0.1:888 和现有 HTTPS 域名不变；旧版本的 bypay-web / bypay-callbacks 服务会被自动停用，这是正常的
-8. 验证：systemctl is-active bypay；curl -s http://127.0.0.1:888/health；再运行第 4 步的脚本：integrity 必须是 ok，users 的数量和哈希必须与更新前完全一致，orders 和 paid 不能减少（更新期间如果有新订单，如实说明）；journalctl -u bypay -n 50 --no-pager 里没有错误；printf '3\n0\n' | ./ByPay.sh 里“代码版本”是最新提交；printf '5\n0\n' | ./ByPay.sh 应显示“已是最新版本”（这一步只会 git fetch，不会改动任何东西）
-9. 如果部署失败：先把完整错误告诉我，不要自己恢复数据库；只有在第 3 步确认没有本地改动时，才可以 git reset --hard 回到第 1 步记下的旧提交并用旧版 ByPay.sh 重新部署，然后重新运行第 4 步的脚本核对数据；不要乱试其他办法
-10. 功能检查（都是只读，不要点击任何会收钱、退款、出款的功能）：
-    - 账本：数据库里 SELECT COALESCE(SUM(cents),0) FROM ledger_lines 必须是 0，SELECT COUNT(*) FROM (SELECT event_id FROM ledger_lines GROUP BY event_id HAVING SUM(cents)!=0) 必须是 0；SELECT name, strftime('%Y-%m-%d %H:%M:%S', last_seen, 'unixepoch') FROM service_health 里的心跳时间（UTC）应在最近几分钟内；不要把历史已付订单补成可提现余额（本次更新不会自动做这件事，保持原样）
-    - 新增的准入、保证金、返现、结算、自动结算、注册审核、注册付费等开关保持默认关闭，不要启用；页面上默认注册费用 10 元、服务费率 1.5% 只是默认值，开关关闭时不会生效
-    - 用管理员登录后台，逐页确认能打开且没有报错：概览、订单（筛选、勾选、导出所选）、用户管理、收款渠道、系统管理的各个分区、系统日志、结算管理、账户中心、商户接口弹窗（V1 / V2）；有浏览器工具就用浏览器，没有就用已登录的 curl 请求对应接口确认都是 200
-    - 如果服务器还没有 QQ SMTP 授权码或 Cloudflare Turnstile 的 Site Key / Secret，列出待我填写的字段，不要说成已验证
-    - 如果启用了“代理 IP 来源”，检查 Nginx / Cloudflare 传来的真实来源头，配置准确的可信 CIDR，不能直接相信任意请求头
+B. 给我一份中间报告，然后等我
+6. 用中文 5 行以内报告 A 的结果（更新前后的提交号、每一步通过或未通过、数据是否一致），最后一句原样写：“请你打开 https://test.bingyun.vip，选择支付宝，点‘下单并打开收银台’，连续下 2 单（不用付款），看二维码出现得快不快；下完在这里回复‘已下单’。”然后停下来等我回复
 
-C. 域名验证文件与微信
-11. curl -i https://pay.bingyun.vip/MP_verify_YIZThTeg958vnQzp.txt 必须是 200，内容正好是 YIZThTeg958vnQzp（16 字节，没有换行），Content-Type 是 text/plain；再测 http://pay.bingyun.vip/MP_verify_YIZThTeg958vnQzp.txt，如实告诉我是 200 还是 301/302（不要为此关闭全站 HTTPS 跳转，微信校验失败时再由我决定是否对这个文件单独放行）。如果被 Nginx 的静态规则（例如 location ~ \.txt$）拦住，改成转发给 Pay：先备份 Nginx 配置，nginx -t 通过后再 reload
-12. Nginx 必须把 / 下的所有路径（包括 /wechat/、/m/、/MP_verify_*.txt）转发给 Pay：检查现有 location / 是否已经覆盖，确有单独规则才改，改前备份并 nginx -t
-13. 系统管理 → 站点与订单 → 域名与通知里的站点地址必须是 https://pay.bingyun.vip（这是公开地址，不是密钥）：检查当前值，不是就在管理后台改成它并告诉我
-14. 微信 7 项参数不在线上数据库里（本机和 VPS 的数据库是分开的）：不要向我索要这些值，也不要让它们出现在聊天里；请确认线上控制台“收款渠道 → 微信支付 → 配置渠道”里有这 7 个字段：AppID、商户号、商户证书序列号、APIv3 密钥、商户私钥、微信支付公钥、微信支付公钥 ID，并告诉我每一项是“已填写”还是“未填写”（只说状态，不要读取或显示内容）。“检查配置”会真实联系微信，由我自己点击
-
-D. 更新测试站（test.bingyun.vip）
-15. 仓库里的 Pay_Callback_Demo.zip 已更新（测试站现在可以选择支付宝或微信支付）：先在仓库目录运行 sha256sum -c Pay_Callback_Demo.zip.sha256（应为 230a9abf26a7aad735ac6cbb9401ecf136d49c7572ab6755ae82670ed3de71b5）；解压到一个新的空目录（不要进入解压目录运行任何脚本）；测试站目录里只用解压出来的源码覆盖同名文件，绝不覆盖或删除 .env、data/、secrets/、.venv（环境、密钥和订单数据）；覆盖前先用 diff -rq 对比，预期只有这 7 个文件有差异：app.py、connection.py、static/app.js、static/index.html、static/style.css、tests/fixtures.py、tests/test_demo.py；如果差异更多，先把列表告诉我，不要继续覆盖
-16. 停止旧的测试站进程，用启动它时的同样方式重新运行 ./run.sh；确认 https://test.bingyun.vip 页面出现“支付方式：支付宝 / 微信支付”，旧订单仍在列表里，商户 ID 和密钥保持原样；不要点“下单并打开收银台”
-17. 确认测试站里的接口地址是 https://pay.bingyun.vip，并且 Pay 的回调主机白名单（BYPAY_CALLBACK_HOSTS）包含 test.bingyun.vip
-
-E. 清理与汇报
-18. 运行 .venv/bin/python tools/cleanup.py 预览，再用 --apply 清理缓存；保留备份（update-* 最近 3 份）、数据库、密钥和当前日志，不要手工删除 data/logs，记录实际清理了什么
-19. 用中文给我最终报告：更新前后的 Git 提交号；每一步的检查结果；第 8 步的数据对比；/MP_verify 文件在 https 和 http 下的结果；还需要我做的事。并提供经过实际登录验证的 pay.bingyun.vip 管理员账号密码，以及已有的普通测试商户账号和商户 ID（没有就如实说没有，不要擅自注册；这是线上凭据，直接告诉我，不要写进任何文件）
+C. 测速（我回复“已下单”之后；全部只读，不要自己下单）
+7. 运行下面的脚本（数据库路径同第 2 步）：
+   python3 - <<'EOF'
+   import json, sqlite3
+   from datetime import datetime, timezone
+   path = "<数据库文件路径>"
+   db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+   rows = db.execute("SELECT created_at, out_trade_no, reason, details FROM events WHERE reason IN ('cashier_qr_requested','cashier_qr_ready','cashier_qr_unavailable') ORDER BY id DESC LIMIT 16").fetchall()
+   for created, number, reason, details in reversed(rows):
+       d = json.loads(details)
+       keys = ("source", "fetched_by", "waited", "elapsed_ms", "fetch_ms", "hops", "check")
+       print(datetime.fromtimestamp(created, timezone.utc).strftime("%H:%M:%S"), number[-8:], reason, {k: d[k] for k in keys if k in d})
+   EOF
+   整理成对比告诉我：新订单的 cashier_qr_ready 里 fetched_by 应是 prefetch，elapsed_ms 是多少毫秒；第 2 单的 elapsed_ms 是否比第 1 单小（连接已复用）；更新前的旧支付宝订单（事件里没有 elapsed_ms）用 requested 到 ready 的时间差（秒）作对比；journalctl -u bypay --since '15 minutes ago' --no-pager 里有没有 qr_prefetch_failed、qr_warm_failed、cashier_qr_unavailable。如果 cashier_qr_unavailable 明显增多，在主站 .env 末尾加一行 BYPAY_QR_PREFETCH=0 并 systemctl restart bypay（回到更新前的取码方式），并告诉我
+8. 把整个过程记到 /root/bingyun-backups/deploy-notes.md，然后给我最终报告（中文，越短越好）：更新前后的提交号；新旧耗时对比；一句话结论：“支付宝二维码已经变快”还是“还差：……”
 ```
 
 ## 9. 控制台交互规则（2026-10-17）
@@ -250,7 +234,7 @@ E. 清理与汇报
 - 用 Epay 的 PHP SDK（php 8.5）交叉验证：同一报文签名逐字节一致，验签与解密互通
 - tools/smoke_wechat.py 在真实浏览器中验证：配置时证书被粘成私钥的说明、检查配置、四种产品卡片、H5 短链接、签名通知后卡片自动变为已支付、退款、订单页微信 logo 与配置名称、易支付 `type=wxpay` 收银台
 - 安全代码评审（由另一个代理独立阅读代码并在进程内复现，不联网；不是第三方审计）：无严重和高危问题；已修复 1 项中危（通知端点没有限速，且每次请求都解析私钥并写日志，可被用来拖慢服务和冲掉审计记录：现在按订单和 IP 限速、私钥延迟解析、拒绝日志去重）和 6 项低危（超长时间戳、退款“明确失败”只信微信自己的错误码、同步返回页按渠道校验、日志脱敏补 APIv3 密钥、易支付返回统一格式、H5 链接续期失败后退避），均有测试
-- 没有做的事：没有用真实商户号付过款或退过款；真实验收需要用户填写 7 项参数、公网 https 站点地址和 Nginx 转发 /wechat/，再用 0.01 元网页支付验证通知，之后自行决定是否测试退款
+- 当时没有做的事（已在后来完成，见第 13 节）：用真实商户号付款和退款；真实验收需要用户填写 7 项参数、公网 https 站点地址和 Nginx 转发 /wechat/，再用 0.01 元网页支付验证通知
 - 已知限制：只支持微信支付公钥模式（新商户默认如此）；如果商户平台仍是平台证书模式，通知验签不可用，订单依靠 worker 查询完成，需要先在商户平台开通公钥
 
 ## 11. 管理页面规则（系统管理、系统日志、结算管理，2026-10-17）
@@ -300,3 +284,65 @@ E. 清理与汇报
 - 没有联系微信支付，没有真实付款、退款；没有在本机运行真实的 deploy() 或菜单 5（会以 root 覆盖 /etc/systemd/system/bypay.service），更新流程用临时 git 仓库和桩化的系统命令验证，另在临时克隆上用真实的检查函数验证了“未部署”“没有本项目的系统服务”两种拒绝
 - JS 安全域名：当前的网页扫码、H5、APP 下单不需要；绑定只需要 VPS 更新后 https://pay.bingyun.vip/MP_verify_YIZThTeg958vnQzp.txt 返回令牌。微信校验若走 http:80 而 Cloudflare 开了“始终使用 HTTPS”，需要如实排查，不能关闭全站跳转
 - 本机数据库不会同步到 VPS：线上控制台需要由用户重新填写微信 7 项参数
+
+
+## 13. 真实验收记录（用户在 VPS 上执行，2026-10-17）
+
+执行与报告：付款、退款由用户在 pay.bingyun.vip / test.bingyun.vip 上操作；VPS Codex 汇报了订单状态和回调结果；以下内容来自这些报告，我没有直接访问 VPS。订单号和平台流水号保留在 VPS 的数据库与事件日志里，不写进仓库
+
+| 渠道 | 操作 | 结果（报告） |
+| --- | --- | --- |
+| 微信支付 | 测试站（独立商户）选择“微信支付”，0.01 元，网页扫码支付 | Pay 订单 PAID；微信支付通知验签通过；Pay 向测试站的业务回调 HTTP 200；测试站以 `notify.verified` 确认到账（测试站订单 PAID） |
+| 支付宝 | 测试站选择“支付宝”，0.01 元，扫码支付 | 测试站先通过服务端查询确认支付（`query`），随后支付宝 TRADE_SUCCESS 通知验签通过，业务回调 HTTP 200；之后重复的通知按幂等处理，不重复入账 |
+| 退款 | 用户自测支付宝和微信支付的退款 | 用户反馈两个渠道的退款都已测试通过（退款订单号和金额未提供，以 VPS 数据库 refunds 表和事件日志为准） |
+
+结论：下单、支付、回调（含服务端查询确认）、幂等和退款在两个渠道上都已用真实资金验收。这是“真实付款已验收”，但不等于审计通过；PayPal、Stripe、自动出款、SMTP/Turnstile 的真实外部验收仍按第 7 节的剩余项目执行
+
+## 14. 支付宝二维码出图速度（2026-10-17）
+
+用户反馈：支付宝网页支付的二维码比微信支付的出得慢；本轮只优化这一项，产品仍是网页支付（page.pay，qr_pay_mode=4），不改成 precreate
+
+### 根因
+
+- 微信 Native 在下单的返回里就带 code_url，打开收银台时二维码已经在订单里，只剩渲染
+- 支付宝网页支付下单时只在本地签名生成支付链接，二维码要等收银台打开后，由服务端打开支付宝的收银台页面，从隐藏输入 qrCode 里取：openapi.alipay.com 网关 → 302 → excashier.alipay.com 页面；每一跳都新建一条 TLS 连接（urllib 不复用连接）
+- 所以顺序是：浏览器加载收银台 → prepare-qr → 逐跳新建连接请求支付宝 → 解析 → 渲染 → 浏览器再请求 qr.svg
+- 本机到支付宝公网域名的 curl 对比（只请求域名首页，没有下单，仅作量级参考）：新建连接 openapi 约 0.33 s、excashier 约 0.69 s；复用连接约 0.084 s、0.231 s，不到三分之一；每次 prepare 还要把商户私钥规范化两次（各约 26 ms）；渲染二维码约 4 ms；本机 prepare-qr 自身约 90 ms。时间主要花在等支付宝，所以办法是“提前开始”和“少建连接”，不是优化渲染
+- 本机数据库里更新前 3 个支付宝网页订单的事件：cashier_qr_requested 到 cashier_qr_ready 相隔 4、2、3 秒（事件时间精确到秒，只是量级；微信订单没有这一段）
+
+### 做法
+
+| 做法 | 作用 | 位置 |
+| --- | --- | --- |
+| 订单创建后立即在后台预取二维码（只限网页支付） | 浏览器加载收银台的时间与向支付宝取二维码重叠 | web/cashier.py Prefetch；web/app.py create_payment_request、prefetch_qr |
+| 所有取二维码的请求共用长连接池，每次取各用独立 client | 请求不再重新握手；cookie 不在订单之间共享 | web/cashier.py CashierFetcher |
+| 下单后 10 分钟内每 25 秒对用过的支付宝域名各发一个 HEAD | 连接不在空闲时被关闭，下一单仍是热连接；窗口之外不向支付宝发任何请求 | web/cashier.py Warmer |
+| 同一订单同一时间只有一个取二维码的请求（checkout_jobs 里的 25 秒租约，跨 gunicorn 进程） | 收银台打开时预取若还在进行就等它，不重复请求，也不重复在支付宝创建交易 | web/store.py claim_qr / qr_busy / release_qr；web/app.py qr_job |
+| prepare 和收银台状态直接返回成品图 qr_svg，前端用 data: 地址显示 | 少一次 qr.svg 往返 | web/epay.py；Cashier.vue；PaymentCard.vue |
+| 商户私钥规范化结果缓存 | 每次 prepare 少约 50 ms（本机测量） | bypay/key_utils.py |
+
+### 安全边界（没有放宽）
+
+- 重定向由程序逐跳手动跟随，每个地址在发出请求之前先过 allowed_url 白名单（https、六个支付宝域名、无用户信息、端口 443）；最多 7 次请求；不读代理和 SSL 环境变量，用 certifi 校验证书
+- 总时间 12 秒（每个请求只拿到剩下的时间，读取页面内容时也检查）；累计响应上限 1.5 MB；不接受压缩传输；重定向响应的正文最多读 64 KiB
+- 连接被支付宝提前关闭时只重试一次，且共用同一个 12 秒期限
+- 预取意味着每个支付宝网页支付订单在创建时就会向支付宝请求二维码并创建交易（以前是打开收银台时）；没人打开的订单到期失效，和以前打开后放弃的订单一样；订单创建的审计说明相应改为“此刻仅本地签名；随后由后台预取，或用户打开收银台时，才会向支付宝请求二维码，支付宝才可能创建交易”
+
+### 开关与降级
+
+- BYPAY_QR_PREFETCH：web/service.py 给网页进程默认 1、给 worker 进程固定 0；在 env 文件里写 BYPAY_QR_PREFETCH=0 会同时关闭预取和保温，回到“打开收银台时才取”（连接池、单飞和成品图仍然生效）
+- 测试和工具默认关闭，不会在没有要求时联系支付宝
+- 预取失败只记日志（qr_prefetch_failed），收银台打开后照常自己取一次；同时进行和排队的预取最多 32 个，多出来的订单不预取，由各自的收银台去取
+- 事件日志里 cashier_qr_ready 记录每次真正向支付宝取二维码的耗时：fetched_by（prefetch 或 request）、elapsed_ms（从开始到取到的总耗时）、fetch_ms（只含与支付宝往返的时间）、hops、hosts、bytes；waited 为 true 表示这次先遇到别的请求正在取，等它结束仍没有二维码才自己接手；等到别人取到二维码的请求直接返回，不再记这个事件
+
+### 验收证据
+
+- tests/test_cashier_speed.py 46 项（全套 314 项通过）：抓取器（逐跳白名单在发请求之前检查、7 次请求上限、总期限、压缩、慢速滴灌、过大响应、重定向正文上限、过期连接重试、cookie 隔离）、预取与保温（开关、窗口、积压上限、失败不外泄）、单飞租约（只请求一次、等待者拿到结果、失败后接手、14 秒上限）、端点（成品图只对有效的支付宝网页订单返回）、服务进程环境、密钥缓存；对 21 处保护逐一做了变异检查，去掉任何一处对应测试都失败
+- 浏览器冒烟 tools/smoke_epay.py：模拟“支付宝要 1.5 秒”、浏览器网络延迟 150 毫秒，点击下单后二维码出现在屏幕上：打开收银台才取是 2.55 秒，下单时就取是 1.73 秒（早约 0.8 秒）；断言一单只取一次、没有单独的 qr.svg 请求；smoke_ui、smoke_platform、smoke_wechat 也通过（二维码图片现在是 data: 地址，两个冒烟已按此读取）
+- 另一个代理独立评审了新的抓取器、预取和单飞：提出的问题都是低风险（重定向响应的正文不受限、压缩响应、慢速滴灌、过强的接手保护、不准确的审计说明、测试缺口），均已修复并有测试
+
+### 边界与待测
+
+- 上面的耗时是本机估计和进程内替身的对比，不是 VPS 上到真实支付宝的实测；更新到 VPS 后看事件日志里 fetched_by 为 prefetch 的 cashier_qr_ready：elapsed_ms 就是下单到取到二维码的时间，用户打开收银台时通常已经取到，没取到就等同一个请求的结果
+- 微信二维码本来就在下单返回里，所以支付宝只能追近、不能超过它；支付宝页面本身的响应时间不由我们控制
+- 没有联系支付宝或微信，没有任何真实付款、退款；本机部署后没有创建订单（创建订单会触发预取并联系支付宝）
