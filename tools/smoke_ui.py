@@ -97,7 +97,7 @@ def run():
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
-                page = browser.new_page(viewport={'width': 1440, 'height': 1000}, accept_downloads=True)
+                page = browser.new_page(viewport={'width': 1440, 'height': 1000}, accept_downloads=True, locale='zh-CN')
                 errors = []
                 page.on('pageerror', lambda e: errors.append(str(e)))
                 page.goto(ORIGIN); page.wait_for_load_state('networkidle')
@@ -177,9 +177,9 @@ def run():
                 selects = page.locator('.table-toolbar select'); shown = [selects.nth(i).evaluate('e => e.selectedOptions[0].textContent') for i in range(selects.count())]
                 check('toolbar: 全部状态 全部渠道 全部场景 正常订单 全部时间 on one row', shown == ['全部状态', '全部渠道', '全部场景', '正常订单', '全部时间'] and len({round(selects.nth(i).bounding_box()['y']) for i in range(5)}) == 1, str(shown))
                 filter_row = page.locator('.table-filter-row')
-                controls = [filter_row.get_by_role('button', name='全选', exact=True), filter_row.get_by_role('button', name='不选', exact=True), filter_row.locator('.selected-count'), filter_row.locator('.console-search'), filter_row.get_by_role('button', name='删除选中'), filter_row.get_by_role('button', name='导出选择 CSV')]
+                controls = [filter_row.get_by_role('button', name='全选', exact=True), filter_row.get_by_role('button', name='不选', exact=True), filter_row.locator('.selected-count'), filter_row.locator('.console-search'), filter_row.get_by_role('button', name='删除选中'), filter_row.get_by_role('button', name='导出CSV')]
                 centres = [c.bounding_box()['y'] + c.bounding_box()['height'] / 2 for c in controls]; lefts = [c.bounding_box()['x'] for c in controls]
-                check('filter row: 全选 不选 已选 0 笔 search 删除选中 导出选择 CSV on one row', max(centres) - min(centres) <= 6 and lefts == sorted(lefts) and filter_row.locator('.selected-count').inner_text() == '已选 0 笔')
+                check('filter row: 全选 不选 已选 0 笔 search 删除选中 导出CSV on one row', max(centres) - min(centres) <= 6 and lefts == sorted(lefts) and filter_row.locator('.selected-count').inner_text() == '已选 0 笔')
                 check('removed: refresh icon, export-filtered button, selection toolbar', page.get_by_label('刷新订单').count() + page.get_by_role('button', name='导出筛选结果').count() + page.locator('.order-selection-toolbar, .order-row-actions').count() == 0)
                 check('table headers', page.locator('.orders-table thead th').all_inner_texts()[1:] == ['商户 ID / 邮箱', '商品 / 订单号', '渠道 / 产品', '实付金额', '手续费', '交易状态', '创建时间', '支付时间', '用户IP', '操作'])
                 first = page.locator('.orders-table tbody tr').first
@@ -196,7 +196,7 @@ def run():
                 body_rows = page.locator('.orders-table tbody tr')
                 body_rows.nth(2).locator('input[type=checkbox]').check(); body_rows.nth(3).locator('input[type=checkbox]').check()
                 picked = [body_rows.nth(i).locator('td').nth(2).locator('code').inner_text() for i in (2, 3)]
-                with page.expect_download() as download: filter_row.get_by_role('button', name='导出选择 CSV').click()
+                with page.expect_download() as download: filter_row.get_by_role('button', name='导出CSV').click()
                 exported = open(download.value.path(), encoding='utf-8-sig').read()
                 check('selected export contains exactly the selected orders', all(n in exported for n in picked) and len(exported.strip().splitlines()) == 3, exported[:200])
                 filter_row.get_by_role('button', name='删除选中').click(); page.locator('.confirm-dialog[open]').get_by_role('button', name='确认删除').click(); expect(page.locator('.console-toast')).to_contain_text('已处理 2 笔', timeout=8000)

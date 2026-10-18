@@ -14,11 +14,12 @@ import ConfirmDialog from './ConfirmDialog.vue'
 const LIMIT = 1000
 const c = inject('console'), route = useRoute()
 const search = ref(String(route.query.q || '')), searchValue = ref(search.value)
+const merchant = ref(String(route.query.merchant || ''))
 const state = ref('all'), channel = ref('all'), product = ref('all'), deleted = ref('0'), period = ref('all')
 const selected = ref(new Set()), selecting = ref(false), exporting = ref(false), confirming = ref(false), acting = ref(false)
 const channelNames = computed(() => ({ alipay: t('支付宝', 'Alipay'), wechat: t('微信支付', 'WeChat Pay'), paypal: 'PayPal', stripe: 'Stripe' }))
-const rows = usePaged('/api/console/orders', 'orders', () => ({ search: search.value, status: state.value, period: period.value, channel: channel.value, product: product.value, deleted: deleted.value }), c)
-const filters = computed(() => new URLSearchParams({ search: search.value, status: state.value, period: period.value, channel: channel.value, product: product.value, deleted: deleted.value }).toString())
+const rows = usePaged('/api/console/orders', 'orders', () => ({ search: search.value, merchant: merchant.value, status: state.value, period: period.value, channel: channel.value, product: product.value, deleted: deleted.value }), c)
+const filters = computed(() => new URLSearchParams({ search: search.value, merchant: merchant.value, status: state.value, period: period.value, channel: channel.value, product: product.value, deleted: deleted.value }).toString())
 const count = computed(() => selected.value.size)
 const pageNumbers = computed(() => rows.data.value.map(order => order.out_trade_no))
 const pageSelected = computed(() => pageNumbers.value.length > 0 && pageNumbers.value.every(number => selected.value.has(number)))
@@ -27,6 +28,7 @@ let debounce
 onBeforeUnmount(() => clearTimeout(debounce))
 watch(searchValue, value => { clearTimeout(debounce); debounce = setTimeout(() => { search.value = value }, 250) })
 watch(() => route.query.q, value => { searchValue.value = String(value || ''); search.value = searchValue.value })
+watch(() => route.query.merchant, value => { merchant.value = String(value || '') })
 // A selection is a list of order numbers. Searching, filtering and paging never change it;
 // only the buttons below do, and switching between active and deleted orders starts over.
 watch(deleted, clearSelection)
@@ -86,9 +88,10 @@ async function exportSelected() {
       <button type="button" class="text-link" :disabled="selecting || !rows.total.value" @click="selectAll"><Icon v-if="selecting" name="loader" class="spin" :size="13" />{{ t('全选', 'Select all') }}</button>
       <button type="button" class="text-link" :disabled="!count" @click="clearSelection">{{ t('不选', 'Clear') }}</button>
       <span class="selected-count" role="status">{{ t(`已选 ${count} 笔`, `${count} selected`) }}</span>
-      <label class="console-search"><Icon name="search" :size="17" /><input v-model="searchValue" :placeholder="t('搜索订单号、商品或交易号', 'Search order, item, or trade number')" :aria-label="t('搜索订单', 'Search orders')" /></label>
+      <span v-if="merchant" class="state-badge neutral"><i></i>{{ t('商户', 'Merchant') }} {{ merchant }}<button type="button" class="text-link" @click="merchant = ''">{{ t('清除', 'Clear') }}</button></span>
+      <label class="console-search"><Icon name="search" :size="17" /><input v-model="searchValue" :placeholder="t('搜索订单号、商品、商户、IP', 'Search order, item, merchant or IP')" :aria-label="t('搜索订单', 'Search orders')" /></label>
       <button type="button" class="button button-secondary" :disabled="!count || acting" @click="confirming = true">{{ deleted === '1' ? t('恢复选中', 'Restore selected') : t('删除选中', 'Delete selected') }}</button>
-      <button type="button" class="button button-secondary" :disabled="!count || exporting" @click="exportSelected"><Icon v-if="exporting" name="loader" class="spin" :size="15" />{{ t('导出选择 CSV', 'Export selected CSV') }}</button>
+      <button type="button" class="button button-secondary" :disabled="!count || exporting" @click="exportSelected"><Icon v-if="exporting" name="loader" class="spin" :size="15" />{{ t('导出CSV', 'Export CSV') }}</button>
     </div>
     <p v-if="rows.error.value" class="error-box" role="alert">{{ rows.error.value }}</p>
     <div v-if="rows.data.value.length" class="table-scroll">

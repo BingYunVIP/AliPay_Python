@@ -165,7 +165,11 @@ class PlatformTests(unittest.TestCase):
         self.policy(fee_threshold='0.10',fee_minimum='0.20')
         tiny=self.create(amount='0.01').json['order'];self.paid(tiny)
         with self.store.connect() as db:
-            fee=db.execute('SELECT gross,fee FROM financial_orders WHERE number=?',(tiny['out_trade_no'],)).fetchone();self.assertEqual(tuple(fee),(1,1))
+            # 金额 0.01 元时最低手续费会等于整笔金额，按规则免收
+            fee=db.execute('SELECT gross,fee FROM financial_orders WHERE number=?',(tiny['out_trade_no'],)).fetchone();self.assertEqual(tuple(fee),(1,0))
+        small=self.create(out_trade_no='TEST_ORDER_0002',amount='1.00').json['order'];self.paid(small)
+        with self.store.connect() as db:
+            fee=db.execute('SELECT gross,fee FROM financial_orders WHERE number=?',(small['out_trade_no'],)).fetchone();self.assertEqual(tuple(fee),(100,50))
         self.balanced()
 
     def test_partial_refunds_reverse_proportional_fee_once(self):

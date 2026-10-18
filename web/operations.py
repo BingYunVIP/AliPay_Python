@@ -139,6 +139,7 @@ class Operations:
         rules=self.rules.read(db);gross=cents(value);fee=rate_fee(gross,rules['fee_rate'])
         if fee<cents(rules['fee_threshold']):fee=max(fee,cents(rules['fee_minimum']))
         fee=min(gross,fee)
+        if fee>=gross:fee=0  # 金额太小时手续费会等于整笔金额，直接免收
         state=self.ensure(user,db);inviter=state['inviter'];commission=0
         if rules['invite_enabled'] and inviter and inviter!=user:
             commission=rate_fee(fee if rules['invite_basis']=='fee' else gross,rules['invite_rate'])

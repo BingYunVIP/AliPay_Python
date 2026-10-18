@@ -24,6 +24,12 @@ BOOLS={k for k,v in DEFAULTS.items() if type(v)is bool}
 ENUMS={'refund_fee_payer':{'platform','merchant'},'invite_basis':{'fee','amount'},'invite_timing':{'immediate','daily','settlement'},'settlement_mode':{'off','manual','auto','both'},'ip_source':{'remote','x_real_ip','x_forwarded_for','cf_connecting_ip'}}
 INTEGERS={'deposit_freeze_days':(0,3650),'merchant_domain_limit':(1,10),'risk_window_seconds':(60,86400),'risk_merchant_count':(1,10000),'risk_ip_count':(1,10000),'risk_failure_count':(1,10000),'risk_callback_failures':(1,10000),'settlement_days':(0,30),'settlement_daily_limit':(1,100),'jobs_interval_seconds':(5,3600)}
 RATES={'fee_rate','invite_rate','risk_min_success_rate','settlement_rate'}
+# Cloudflare 回源网段（官方公布）：来自这些地址的请求，真实访客 IP 只在 CF-Connecting-IP 里
+CLOUDFLARE_NETWORKS=tuple(ipaddress.ip_network(value) for value in (
+    '173.245.48.0/20','103.21.244.0/22','103.22.200.0/22','103.31.4.0/22','141.101.64.0/18','108.162.192.0/18',
+    '190.93.240.0/20','188.114.96.0/20','197.234.240.0/22','198.41.128.0/17','162.158.0.0/15','104.16.0.0/13',
+    '104.24.0.0/14','172.64.0.0/13','131.0.72.0/22','2400:cb00::/32','2606:4700::/32','2803:f800::/32',
+    '2405:b500::/32','2405:8100::/32','2a06:98c0::/29','2c0f:f248::/32'))
 MONEY={'registration_fee','fee_threshold','fee_minimum','deposit_minimum','risk_daily_amount','settlement_minimum','settlement_fee_min','settlement_fee_max'}
 
 
@@ -78,8 +84,9 @@ class PlatformRules:
 
     @staticmethod
     def _forwarded_ip(request,peer):
-        """Nginx 反代或 Cloudflare Tunnel 下 REMOTE_ADDR 是回环/内网地址，真实访客在转发头里。"""
-        if not (peer.is_loopback or peer.is_private):return str(peer)
+        """本机/内网反代或 Cloudflare 回源时，REMOTE_ADDR 只是代理地址，真实访客在转发头里。"""
+        behind_cloudflare=any(peer in network for network in CLOUDFLARE_NETWORKS)
+        if not (behind_cloudflare or peer.is_loopback or peer.is_private):return str(peer)
         for header in ('CF-Connecting-IP','X-Real-IP','X-Forwarded-For'):
             value=request.headers.get(header,'')
             if not value:continue

@@ -93,7 +93,7 @@ def run():
                 check('Alipay QR is a branded svg', '<svg' in svg and '#075fbd' in svg)
                 page.goto(ORIGIN + '/dashboard?tab=orders'); page.wait_for_load_state('networkidle'); page.get_by_label('支付场景筛选').select_option('page'); expect(page.get_by_role('option', name='全部渠道', exact=True)).to_have_count(1)
                 page.get_by_role('button', name='全选', exact=True).click()
-                with page.expect_download() as download: page.get_by_role('button', name='导出选择 CSV', exact=True).click()
+                with page.expect_download() as download: page.get_by_role('button', name='导出CSV', exact=True).click()
                 check('selected orders export as csv', download.value.suggested_filename.endswith('.csv'))
                 page.get_by_role('button', name='删除选中', exact=True).click(); page.get_by_role('dialog').get_by_role('button', name='确认', exact=False).click(); expect(page.get_by_text('暂无匹配订单', exact=True)).to_be_visible()
                 page.get_by_label('订单列表范围').select_option('1'); page.get_by_role('button', name='全选', exact=True).click(); page.get_by_role('button', name='恢复选中', exact=True).click(); page.get_by_role('dialog').get_by_role('button', name='确认', exact=False).click()

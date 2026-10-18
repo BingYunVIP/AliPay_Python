@@ -72,11 +72,23 @@ def install_console(app, store, auth, trace, cfg, ready, ApiError):
         if config_id:
             if not config_id.isdigit(): raise ApiError("invalid_channel_config")
             where += " AND o.payment_config_id=?"; args.append(int(config_id))
+        merchant = request.args.get("merchant", "").strip()[:254]
+        if merchant:
+            # 用户表点“累计收款/成功率”跳过来时按商户 ID 或邮箱筛选
+            if merchant.isdigit():
+                where += " AND m.pid=?"; args.append(int(merchant))
+            else:
+                where += " AND lower(u.email)=?"; args.append(merchant.lower())
         search = request.args.get("search", "").strip()[:128]
         if search:
             term = "%" + search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-            where += " AND (o.out_trade_no LIKE ? ESCAPE '\\' OR o.subject LIKE ? ESCAPE '\\' OR COALESCE(o.trade_no,'') LIKE ? ESCAPE '\\')"
-            args += [term] * 3
+            # 订单列表里看得到的列都能搜：订单号、商品、渠道交易号、商户 ID/邮箱、渠道配置、状态、用户 IP
+            where += (" AND (o.out_trade_no LIKE ? ESCAPE '\\' OR o.subject LIKE ? ESCAPE '\\'"
+                      " OR COALESCE(o.trade_no,'') LIKE ? ESCAPE '\\' OR COALESCE(o.client_ip,'') LIKE ? ESCAPE '\\'"
+                      " OR o.status LIKE ? ESCAPE '\\' OR COALESCE(o.provider_status,'') LIKE ? ESCAPE '\\'"
+                      " OR COALESCE(u.email,'') LIKE ? ESCAPE '\\' OR CAST(COALESCE(m.pid,'') AS TEXT) LIKE ? ESCAPE '\\'"
+                      " OR COALESCE(c.name,'') LIKE ? ESCAPE '\\')")
+            args += [term] * 9
         status = request.args.get("status", "all")
         if status != "all":
             if status not in {"CREATED", "PAID", "CLOSED", "EXPIRED", "REFUNDING", "PARTIALLY_REFUNDED", "REFUNDED"}: raise ApiError("invalid_status")
@@ -133,7 +145,9 @@ def install_console(app, store, auth, trace, cfg, ready, ApiError):
         where, args = order_filter()
         page, size = page_args()
         with store.connect() as db:
-            total = db.execute(f"SELECT COUNT(*) FROM orders o WHERE {where}", args).fetchone()[0]
+            total = db.execute(f"""SELECT COUNT(*) FROM orders o LEFT JOIN users u ON u.id=o.user_id
+                LEFT JOIN merchant_accounts m ON m.user_id=o.user_id LEFT JOIN channel_configs c ON c.id=o.payment_config_id
+                WHERE {where}""", args).fetchone()[0]
             rows = db.execute(f"""SELECT o.*,c.name config_name,u.email merchant_email,m.pid merchant_id,
                 COALESCE(f.fee,0) fee_cents FROM orders o
                 LEFT JOIN channel_configs c ON c.id=o.payment_config_id
@@ -148,7 +162,9 @@ def install_console(app, store, auth, trace, cfg, ready, ApiError):
     def order_ids():
         where, args = order_filter()
         with store.connect() as db:
-            rows = db.execute(f"SELECT o.out_trade_no FROM orders o WHERE {where} ORDER BY o.created_at DESC,o.out_trade_no DESC LIMIT 1001", args).fetchall()
+            rows = db.execute(f"""SELECT o.out_trade_no FROM orders o LEFT JOIN users u ON u.id=o.user_id
+                LEFT JOIN merchant_accounts m ON m.user_id=o.user_id LEFT JOIN channel_configs c ON c.id=o.payment_config_id
+                WHERE {where} ORDER BY o.created_at DESC,o.out_trade_no DESC LIMIT 1001""", args).fetchall()
         return jsonify(ids=[row[0] for row in rows[:1000]], limited=len(rows) > 1000)
 
     def selected_filter(payload):
@@ -181,16 +197,21 @@ def install_console(app, store, auth, trace, cfg, ready, ApiError):
     def export_orders():
         where, args = selected_filter(request.get_json(silent=True)) if request.method=='POST' else order_filter()
         with store.connect() as db:
-            if db.execute(f"SELECT COUNT(*) FROM orders o WHERE {where}", args).fetchone()[0] > 10000:
+            if db.execute(f"""SELECT COUNT(*) FROM orders o LEFT JOIN users u ON u.id=o.user_id
+                    LEFT JOIN merchant_accounts m ON m.user_id=o.user_id LEFT JOIN channel_configs c ON c.id=o.payment_config_id
+                    WHERE {where}""", args).fetchone()[0] > 10000:
                 raise ApiError("export_limit_exceeded", 422)
-            rows = db.execute(f"SELECT * FROM orders o WHERE {where} ORDER BY created_at DESC", args).fetchall()
+            rows = db.execute(f"""SELECT o.* FROM orders o LEFT JOIN users u ON u.id=o.user_id
+                LEFT JOIN merchant_accounts m ON m.user_id=o.user_id LEFT JOIN channel_configs c ON c.id=o.payment_config_id
+                WHERE {where} ORDER BY o.created_at DESC""", args).fetchall()
         output = io.StringIO()
         writer = csv.writer(output)
         columns = ["out_trade_no", "subject", "amount", "channel", "product", "status", "trade_no", "created_at", "paid_at"]
         writer.writerow(columns)
         for row in rows:
             values = [str(row[k] if row[k] is not None else "") for k in columns]
-            writer.writerow(["'" + v if v.lstrip().startswith(("=", "+", "-", "@")) or v.startswith(("\t", "\r", "\n")) else v for v in values])
+            # Excel 会把 12 位以上的纯数字变成科学计数法，前缀一个单引号让它按文本显示
+            writer.writerow(["'" + v if v.lstrip().startswith(("=", "+", "-", "@")) or v.startswith(("\t", "\r", "\n")) or (v.isdigit() and len(v) >= 12) else v for v in values])
         trace("console.export", "orders_exported", {"count": len(rows)}, user_id=g.user["id"])
         return Response("\ufeff" + output.getvalue(), mimetype="text/csv", headers={"Content-Disposition": 'attachment; filename="pay-orders.csv"'})
 
@@ -290,6 +311,10 @@ def install_console(app, store, auth, trace, cfg, ready, ApiError):
                 db.execute("INSERT OR IGNORE INTO merchant_domains(user_id,host,status,created_at) VALUES (?,?,?,?)",
                            (user["id"], host, "approved" if whitelist else "pending", int(time.time())))
         if deposit: operations.credit_deposit(user["id"], deposit, "user:" + str(user["id"]))
+        if whitelist and hosts:
+            # 商户回调域名白名单是平台级的，勾选后立即同步到系统设置
+            settings = app.extensions["site_settings"]
+            settings.save({"callback_hosts": sorted(set(settings.read()["callback_hosts"]) | set(hosts))})
         trace("console.user", "user_created", {"target_user_id": user["id"], "domains": hosts, "callback_whitelist": whitelist,
               "disabled": disabled, "pay_enabled": pay_enabled, "deposit": amount(deposit)}, user_id=g.user["id"])
         return jsonify(user={**user, "disabled": disabled, "pay_enabled": pay_enabled, "domains": hosts, "deposit": amount(deposit)}), 201

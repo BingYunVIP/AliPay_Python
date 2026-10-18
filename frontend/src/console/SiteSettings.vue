@@ -64,7 +64,7 @@ async function save() {
         <FormRow field="site-email_domains" stacked :label="t('邮箱域名白名单', 'Allowed email domains')" :hint="t('只接受这些域名的邮箱注册，输入后按回车添加；支持 *.edu.cn 这类通配', 'Only these domains may sign up. Press Enter to add one; wildcards such as *.edu.cn are supported')" :error="message('email_domains')">
           <TagInput id="site-email_domains" v-model="draft.email_domains" normalize="domain" :placeholder="t('@qq.com、*.edu.cn', '@qq.com, *.edu.cn')" :disabled="busy" />
         </FormRow>
-        <FormRow field="site-max_amount" :label="t('单笔测试金额上限', 'Maximum test amount')" :hint="`${t('不能超过服务器额度', 'Server ceiling')} ¥ ${c.settings.value?.amount_ceiling || '3000.00'}`" :error="message('max_amount')">
+        <FormRow field="site-max_amount" :label="t('单笔金额上限', 'Maximum amount per order')" :hint="`${t('对测试支付和商户接口同时生效，不能超过服务器额度', 'Applies to test payments and the merchant API; capped by the server ceiling')} ¥ ${c.settings.value?.amount_ceiling || '3000.00'}`" :error="message('max_amount')">
           <div class="unit-field"><input id="site-max_amount" name="max_amount" v-model="draft.max_amount" class="field" inputmode="decimal" autocomplete="off" required :disabled="busy" v-bind="aria('max_amount')" /><span class="unit">{{ t('元', 'CNY') }}</span></div>
         </FormRow>
       </FormGroup>

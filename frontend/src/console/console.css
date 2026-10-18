@@ -185,6 +185,10 @@
 .payment-workbench { display: grid; grid-template-columns: minmax(310px,.86fr) minmax(0,1.14fr); gap: 23px; align-items: start; }
 .payment-form { padding: 24px; }
 .payment-form .card-heading { padding: 0 0 20px; }
+/* 创建测试订单：字段区与提交按钮之间统一留出 20px */
+.payment-form .form-grid { margin-bottom: 4px; }
+.payment-form .field-hint { margin: 10px 0 0; }
+.payment-form .button.full-width { margin-top: 20px; }
 .pay-console fieldset { border: 0; margin: 0; padding: 0; }
 .pay-console legend { padding: 0; font-size: 12px; color: var(--muted); margin-bottom: 10px; }
 .product-choices { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; }

@@ -75,7 +75,7 @@ def run():
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
-                page = browser.new_page(viewport={'width': 1440, 'height': 1000})
+                page = browser.new_page(viewport={'width': 1440, 'height': 1000}, locale='zh-CN')
                 errors = []
                 page.on('pageerror', lambda e: errors.append(str(e)))
                 page.goto(ORIGIN + '/login'); page.locator('#email').fill('admin'); page.locator('#password').fill('admin'); page.locator('form button.button').click(); page.wait_for_url('**/dashboard**')
@@ -166,13 +166,13 @@ def run():
                 # ---- an Epay merchant paying with type=wxpay gets a WeChat cashier
                 created = app.test_client().post('/mapi.php', data=signed({'pid': str(profile['merchant_id']), 'type': 'wxpay', 'out_trade_no': 'SHOP_WX_01', 'name': '商户微信商品', 'money': '0.01', 'notify_url': 'https://merchant.example/notify'}, profile['md5_key'], 'MD5')).json
                 check('type=wxpay creates a cashier order', created.get('code') == 1, str(created))
-                cashier = browser.new_page(viewport={'width': 480, 'height': 900})
+                cashier = browser.new_page(viewport={'width': 480, 'height': 900}, locale='zh-CN')
                 cashier.goto(ORIGIN + urlsplit(created['payurl']).path); cashier.wait_for_load_state('networkidle')
                 expect(cashier.get_by_alt_text('微信付款二维码')).to_be_visible(timeout=15000)
                 check('cashier names WeChat and shows the compact green code', '打开微信扫一扫' in cashier.locator('body').inner_text() and cashier.evaluate('document.querySelector(".cashier-qr img").naturalWidth') > 0)
                 cashier.screenshot(path=str(evidence / 'cashier.png'))
                 deliver_notice(created['trade_no'])
-                expect(cashier.locator('.cashier-result')).to_contain_text('支付成功', timeout=10000)
+                expect(cashier.locator('.cashier-done')).to_contain_text('支付成功', timeout=10000)
                 check('the merchant notification says wxpay', merchants.notification(created['trade_no'])['type'] == 'wxpay')
                 check('no browser errors', not errors, str(errors[:4]))
                 browser.close()

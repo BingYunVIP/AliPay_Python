@@ -4,16 +4,25 @@ import { useRoute } from 'vue-router'
 import Brand from '../components/Brand.vue'
 import Icon from '../components/Icon.vue'
 const route = useRoute(), order = ref(null), error = ref(''), busy = ref(false), qrVersion = ref(0), qrSvg = ref(''), now = ref(Date.now())
+// 收银台是独立页面：按浏览器语言显示中英文，不需要登录
+const zh = computed(() => String(navigator.language || 'zh').toLowerCase().startsWith('zh'))
+const t = (cn, en) => zh.value ? cn : en
 const base = computed(() => `/api/cashier/${encodeURIComponent(route.params.token)}`)
 const waiting = computed(() => order.value?.status === 'CREATED' && order.value.expires_at * 1000 > now.value)
 // the finished image comes with the order when it is ready, so no second request is needed to show it
 const qrSource = computed(() => qrSvg.value ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(qrSvg.value)}` : `${base.value}/qr.svg?v=${qrVersion.value}`)
-const provider = computed(() => order.value?.channel === 'wechat' ? '微信' : '支付宝')
+const provider = computed(() => order.value?.channel === 'wechat' ? t('微信支付', 'WeChat Pay') : t('支付宝', 'Alipay'))
+const scanName = computed(() => order.value?.channel === 'wechat' ? t('微信', 'WeChat') : t('支付宝', 'Alipay'))
 let timer, posted = false, polling = false
 async function request(path = '', payload) {
   const response = await fetch(base.value + path, payload === undefined ? {} : {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)})
   const data = await response.json()
-  if (!response.ok) throw new Error(({cashier_not_found:'收银台不存在或已过期',cashier_qr_unavailable:'二维码暂未获取，请重试',payment_order_expired:'订单已过期，请返回商户重新下单',rate_limited:'刷新较频繁，请稍后重试'})[data.error] || '收银台暂不可用，请稍后重试')
+  if (!response.ok) throw new Error(({
+    cashier_not_found: t('收银台不存在或已过期', 'This checkout does not exist or has expired'),
+    cashier_qr_unavailable: t('二维码暂未获取，请重试', 'The QR code is not ready — try again'),
+    payment_order_expired: t('订单已过期，请返回商户重新下单', 'This order expired — order again from the merchant'),
+    rate_limited: t('刷新较频繁，请稍后重试', 'Too many refreshes — try again shortly'),
+  })[data.error] || t('收银台暂不可用，请稍后重试', 'The checkout is unavailable — try again shortly'))
   return data
 }
 async function refresh(first = false) {
@@ -25,8 +34,8 @@ async function refresh(first = false) {
     if (order.value.paid && !posted) {
       posted = true
       if (timer) window.clearInterval(timer)
-      const requestedParent=route.query.embed_origin
-      const parentOrigin=order.value.parent_origins?.includes(requestedParent) ? requestedParent : order.value.parent_origin
+      const requestedParent = route.query.embed_origin
+      const parentOrigin = order.value.parent_origins?.includes(requestedParent) ? requestedParent : order.value.parent_origin
       if (window.parent !== window) window.parent.postMessage({type:'bypay:paid',trade_no:order.value.trade_no,out_trade_no:order.value.out_trade_no},parentOrigin)
     }
   } catch (e) { error.value = e.message }
@@ -46,33 +55,62 @@ async function prepare() {
 onMounted(async () => {
   await refresh(true)
   if (waiting.value && !order.value.qr_ready) await prepare()
-  if (!order.value?.paid) timer = window.setInterval(() => { now.value = Date.now(); if (!document.hidden) refresh() },2500)
+  if (!order.value?.paid) timer = window.setInterval(() => { now.value = Date.now(); if (!document.hidden) refresh() }, 2500)
 })
 onBeforeUnmount(() => window.clearInterval(timer))
 </script>
 <template>
   <main class="pay-cashier">
-    <div class="cashier-brand"><Brand name="bingyun"/><span>冰云支付 <small>Pay</small></span></div>
+    <header class="cashier-head">
+      <div class="cashier-brand"><Brand name="bingyun"/><span>{{ t('冰云支付', 'BingYun Pay') }}</span></div>
+      <a v-if="order?.paid && order.return_available" class="cashier-action" :href="`${base}/return`" target="_top">{{ t('返回站点', 'Back to site') }}<Icon name="arrow" :size="14"/></a>
+      <button v-else-if="order" type="button" class="cashier-action" :disabled="busy" @click="prepare"><Icon name="refresh" :class="{ spin: busy }" :size="14"/>{{ t('刷新二维码', 'Refresh') }}</button>
+    </header>
     <template v-if="order">
-      <div class="cashier-amount" :style="{ '--channel': order.channel === 'wechat' ? '#09a365' : '#1677ff' }"><Brand :name="order.channel"/><strong>￥{{ order.amount }}</strong></div>
-      <h1>{{ order.subject }}</h1><p class="cashier-number">{{ order.out_trade_no }}</p>
-      <div v-if="order.paid" class="cashier-result" role="status"><Icon name="check" :size="44"/><h2>支付成功</h2><p>支付结果已由冰云支付核验</p></div>
+      <p class="cashier-subject">{{ order.subject }}</p>
+      <p class="cashier-number">{{ order.out_trade_no }}</p>
+      <p v-if="!order.paid && waiting" class="cashier-amount">¥ {{ order.amount }}</p>
+      <div v-if="order.paid" class="cashier-done" role="status">
+        <span class="cashier-check"><Icon name="check" :size="38"/></span>
+        <h1>{{ t('支付成功', 'Payment successful') }}</h1>
+        <p>{{ t('支付结果已由冰云支付核验', 'Verified by BingYun Pay') }}</p>
+      </div>
       <template v-else-if="waiting">
         <div class="cashier-qr" :aria-busy="busy">
-          <img v-if="order.qr_ready && !busy" :src="qrSource" :alt="`${provider}付款二维码`" width="230" height="230" />
-          <div v-else class="cashier-placeholder"><Icon v-if="busy" name="loader" class="spin" :size="28"/><span>{{ busy ? `正在获取${provider}二维码` : '二维码暂未就绪' }}</span></div>
+          <img v-if="order.qr_ready && !busy" :src="qrSource" :alt="t(`${scanName}付款二维码`, `${provider} payment QR code`)" width="228" height="228" />
+          <div v-else class="cashier-placeholder"><Icon v-if="busy" name="loader" class="spin" :size="26"/><span>{{ busy ? t(`正在获取${provider}二维码`, `Loading the ${provider} QR code`) : t('二维码暂未就绪', 'QR code not ready') }}</span></div>
         </div>
-        <p>打开{{ provider }}扫一扫</p>
-        <button class="button button-secondary" :disabled="busy" @click="prepare">{{ busy ? '正在获取' : order.qr_ready ? '刷新二维码' : '重新获取二维码' }}</button>
+        <p class="cashier-tip">{{ t(`打开${scanName}扫一扫`, `Scan with ${provider}`) }}</p>
       </template>
-      <div v-else class="cashier-result"><h2>{{ order.status==='EXPIRED' ? '订单已过期' : '订单已关闭' }}</h2><p>请返回商户重新下单</p></div>
-      <a v-if="order.paid && order.return_available" class="button" :href="`${base}/return`" target="_top">返回商户</a>
+      <div v-else class="cashier-done">
+        <h1>{{ order.status === 'EXPIRED' ? t('订单已过期', 'Order expired') : t('订单已关闭', 'Order closed') }}</h1>
+        <p>{{ t('请返回商户重新下单', 'Return to the merchant and order again') }}</p>
+      </div>
     </template>
-    <p v-else-if="!error">正在加载收银台</p>
+    <p v-else-if="!error" class="cashier-tip">{{ t('正在加载收银台', 'Loading the checkout') }}</p>
     <p v-if="error" class="error-box" role="alert">{{ error }}</p>
   </main>
 </template>
 <style scoped>
-.pay-cashier{font-family:var(--font-body,inherit);box-sizing:border-box;max-width:430px;min-height:480px;margin:0 auto;padding:26px 24px;text-align:center;color:var(--text,#f1f5fc)}
-.cashier-brand{display:flex;align-items:center;justify-content:center;gap:10px;font-size:15px}.cashier-brand :deep(svg),.cashier-brand :deep(img){width:26px;height:26px}.cashier-brand small{color:#8c9bb0;margin-left:7px}.cashier-amount{display:flex;align-items:center;justify-content:center;gap:10px;margin:24px 0 10px}.cashier-amount :deep(svg),.cashier-amount :deep(img){width:28px;height:28px}.cashier-amount :deep(svg){color:var(--channel,#1677ff)}.cashier-amount strong{font-size:34px;letter-spacing:-1px}.pay-cashier h1{font-size:16px;line-height:1.5;margin:0;overflow-wrap:anywhere}.cashier-number{font-size:12px;color:#97a7bd;word-break:break-all;margin:6px 0 18px}.cashier-qr{margin:0 auto;width:254px;max-width:100%;aspect-ratio:1;background:white;padding:12px;box-sizing:border-box;border-radius:16px;display:grid;place-items:center}.cashier-qr img{max-width:100%;height:auto}.cashier-placeholder{color:#1b3a64;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:16px;font-size:13px}.pay-cashier>p{font-size:13px;line-height:1.7}.pay-cashier .button{margin:12px auto 0;justify-content:center}.cashier-result{margin:32px auto;color:#61d7a5}.cashier-result h2{font-size:23px}.cashier-result p{font-size:13px}.pay-cashier .error-box{text-align:left;overflow-wrap:anywhere}
+/* 固定版心：手机上占满宽度，桌面上是一张居中的卡片（9:16 的手机比例） */
+.pay-cashier{--cashier-w:392px;box-sizing:border-box;width:100%;max-width:var(--cashier-w);min-height:min(660px,100svh);margin:0 auto;padding:20px 24px 30px;display:flex;flex-direction:column;color:var(--text,#f1f5fc);font-family:var(--font-body,inherit)}
+.cashier-head{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:36px}
+.cashier-brand{display:flex;align-items:center;gap:9px;font-size:14px;font-weight:500;letter-spacing:-.01em}
+.cashier-brand :deep(svg),.cashier-brand :deep(img){width:24px;height:24px}
+.cashier-action{display:inline-flex;align-items:center;gap:5px;min-height:32px;padding:0 12px;border:1px solid var(--console-border,rgba(255,255,255,.14));border-radius:999px;background:none;color:var(--muted,#9aa8bd);font-size:12px;text-decoration:none}
+.cashier-action:hover{color:var(--text,#f1f5fc);border-color:color-mix(in srgb,var(--accent,#1677ff) 45%,transparent)}
+.cashier-action:disabled{opacity:.6}
+.cashier-subject{margin:34px 0 0;font-size:19px;line-height:1.45;font-weight:500;text-align:center;letter-spacing:-.01em;overflow-wrap:anywhere}
+.cashier-number{margin:8px 0 0;color:var(--faint,#7d8ba1);font-size:12px;text-align:center;word-break:break-all;font-variant-numeric:tabular-nums}
+.cashier-amount{margin:18px 0 0;font-size:32px;font-weight:600;text-align:center;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.cashier-qr{width:252px;max-width:100%;aspect-ratio:1;margin:26px auto 0;padding:12px;box-sizing:border-box;border-radius:18px;background:#fff;display:grid;place-items:center;box-shadow:0 10px 34px #0000002e}
+.cashier-qr img{display:block;max-width:100%;height:auto}
+.cashier-placeholder{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;color:#1b3a64;font-size:12px;text-align:center}
+.cashier-tip{margin:16px 0 0;color:var(--faint,#7d8ba1);font-size:12px;text-align:center}
+.cashier-done{display:flex;flex-direction:column;align-items:center;gap:10px;margin:56px 0 0;text-align:center}
+.cashier-check{display:grid;place-items:center;width:76px;height:76px;border-radius:50%;background:color-mix(in srgb,#30b969 16%,transparent);color:#30b969}
+.cashier-done h1{margin:4px 0 0;font-size:22px;font-weight:600;letter-spacing:-.02em}
+.cashier-done p{margin:0;color:var(--faint,#7d8ba1);font-size:12px}
+.pay-cashier .error-box{text-align:left;overflow-wrap:anywhere;margin-top:20px}
+@media (max-width:460px){.pay-cashier{--cashier-w:100%;padding:18px 18px 26px}.cashier-subject{margin-top:26px;font-size:17px}.cashier-amount{font-size:28px}.cashier-qr{width:min(252px,78vw);margin-top:22px}}
 </style>

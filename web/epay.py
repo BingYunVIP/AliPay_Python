@@ -3,6 +3,7 @@ import hmac
 import ipaddress
 import re
 import time
+from decimal import Decimal
 from functools import wraps
 from urllib.parse import urlencode, urlsplit
 
@@ -97,7 +98,7 @@ def install_epay(app, merchants, auth, trace, create_payment, prepare_qr, ApiErr
 
     messages = {'invalid_signature':'签名校验失败，请检查商户 ID 和签名密钥','merchant_unavailable':'商户不存在或已停用',
                 'rsa_required':'此商户仅允许 RSA 签名','order_not_found':'订单号不存在','order_conflict':'同一商户订单号的参数发生变化',
-                'channel_not_integrated':'该收款渠道尚未接入','payment_not_configured':'收款渠道尚未配置','wechat_https_required':'微信支付需要平台使用公网 HTTPS 站点地址','wechat_no_auth':'微信支付商户号未开通该产品','wechat_app_id_mismatch':'微信支付 AppID 与商户号未绑定','invalid_merchant_callback':'商户回调地址未获允许'}
+                'channel_not_integrated':'该收款渠道尚未接入','payment_not_configured':'收款渠道尚未配置','wechat_https_required':'微信支付需要平台使用公网 HTTPS 站点地址','wechat_no_auth':'微信支付商户号未开通该产品','wechat_app_id_mismatch':'微信支付 AppID 与商户号未绑定','invalid_merchant_callback':'商户回调地址未获允许','amount_exceeded':'金额超过平台单笔上限'}
     def endpoint(version, action):
         def decorate(fn):
             @wraps(fn)
@@ -119,6 +120,7 @@ def install_epay(app, merchants, auth, trace, create_payment, prepare_qr, ApiErr
         name=params.get('name','').strip()
         if not 1<=len(name)<=127: raise ApiError('invalid_subject')
         amount=money(params.get('money',''))
+        if Decimal(amount)>Decimal(store.setting('max_amount',money(app.config['TEST_MAX_AMOUNT']))):raise ApiError('amount_exceeded')
         epay_type=params.get('type','alipay')
         channel=EPAY_CHANNELS.get(epay_type)
         if not channel: raise ApiError('channel_not_integrated')
