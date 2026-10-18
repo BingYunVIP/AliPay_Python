@@ -36,6 +36,7 @@ class FakeWechat:
         self.serial = "4C3B2A1908F7E6D5C4B3A2910817263544332211"
         self.public_key_id = "PUB_KEY_ID_0119000001092026101700000001"
         self.orders, self.refunds, self.calls = {}, {}, []
+        self.request_authorizations = []
         self.refund_status = "SUCCESS"
         self.answer_serial = None  # make answers claim another key id (a rotated key)
         self.sign_responses = True
@@ -72,7 +73,9 @@ class FakeWechat:
     def handle(self, request):
         body = request.content.decode()
         target = request.url.raw_path.decode()
-        match = AUTHORIZATION.fullmatch(request.headers.get("Authorization", ""))
+        authorization = request.headers.get("Authorization", "")
+        self.request_authorizations.append(authorization)
+        match = AUTHORIZATION.fullmatch(authorization)
         self.calls.append((request.method, target, body))
         if not match or match["mchid"] != self.mch_id or match["serial"] != self.serial:
             return self._error(401, "SIGN_ERROR", "bad authorization")
@@ -95,6 +98,9 @@ class FakeWechat:
             return self._create(path.rsplit("/", 1)[1], data)
         if request.method == "GET" and path.startswith("/v3/pay/transactions/out-trade-no/"):
             return self._query(path.rsplit("/", 1)[1], parse_qs(urlsplit(target).query))
+        close_prefix, close_suffix = "/v3/pay/transactions/out-trade-no/", "/close"
+        if request.method == "POST" and path.startswith(close_prefix) and path.endswith(close_suffix):
+            return self._close(path[len(close_prefix):-len(close_suffix)], data)
         if request.method == "POST" and path == "/v3/refund/domestic/refunds":
             return self._refund(data)
         if request.method == "GET" and path.startswith("/v3/refund/domestic/refunds/"):
@@ -139,6 +145,18 @@ class FakeWechat:
             return self._error(404, "ORDER_NOT_EXIST", "order not exist")
         return self._reply(200, self.transaction(number))
 
+    def _close(self, number, data):
+        if data.get("mchid") != self.mch_id:
+            return self._error(400, "PARAM_ERROR", "mchid")
+        order = self.orders.get(number)
+        if not order:
+            return self._error(404, "ORDER_NOT_EXIST", "order not exist")
+        if order["state"] == "CLOSED":
+            return self._error(400, "ORDER_CLOSED", "order already closed")
+        if order["state"] != "NOTPAY":
+            return self._error(400, "ORDER_PAID", "order already paid")
+        order["state"] = "CLOSED"
+        return self._reply(204)
     def transaction(self, number, **overrides):
         order = self.orders[number]
         data = {"appid": self.app_id, "mchid": self.mch_id, "out_trade_no": number, "transaction_id": order["transaction_id"], "trade_type": order["product"].upper().replace("H5", "MWEB"),

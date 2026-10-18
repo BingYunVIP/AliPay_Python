@@ -134,9 +134,11 @@ class Operations:
         db.executemany('INSERT INTO ledger_lines(event_id,account,user_id,cents) VALUES (?,?,?,?)',[(key,a,u,v) for a,u,v in lines if v])
         return True
 
-    def snapshot(self,db,user,number,value):
+    def snapshot(self,db,user,number,value,merchant_fee_rate=None):
         if db.execute('SELECT 1 FROM platform_bills WHERE number=?',(number,)).fetchone():return
-        rules=self.rules.read(db);gross=cents(value);fee=rate_fee(gross,rules['fee_rate'])
+        rules=self.rules.read(db);gross=cents(value)
+        if merchant_fee_rate is not None: rules['fee_rate']=str(merchant_fee_rate)
+        fee=rate_fee(gross,rules['fee_rate'])
         if fee<cents(rules['fee_threshold']):fee=max(fee,cents(rules['fee_minimum']))
         fee=min(gross,fee)
         if fee>=gross:fee=0  # 金额太小时手续费会等于整笔金额，直接免收

@@ -109,7 +109,8 @@ def run():
 
                 # ---- the four products
                 page.goto(ORIGIN + '/dashboard?tab=testpay'); page.wait_for_load_state('networkidle')
-                page.get_by_label('选择收款配置').select_option(label='微信支付')
+                page.get_by_role('button', name='选择收款配置').click()
+                page.get_by_role('option', name='微信支付').click()
                 check('production badge is shown for WeChat Pay', '正式环境' in page.locator('.console-page-heading').inner_text())
                 numbers = {}
                 for product, label in (('page', '网页支付'), ('wap', '手机支付'), ('app', 'APP 支付'), ('mini', '小程序支付')):

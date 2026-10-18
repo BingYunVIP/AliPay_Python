@@ -92,7 +92,7 @@ class _NotifyHandler(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
         path = urlparse(self.path).path
         self.connection.settimeout(10)
-        if path != "/alipay/notify" or urlparse(self.path).query:
+        if path not in {"/payments/notify", "/alipay/notify"} or urlparse(self.path).query:
             self.close_connection = True
             self._respond(404, "not found")
             return
@@ -109,7 +109,7 @@ class _NotifyHandler(BaseHTTPRequestHandler):
             self._respond(400, "failure")
             return
 
-        if path == "/alipay/notify":
+        if path in {"/payments/notify", "/alipay/notify"}:
             self._handle_notify(path, params)
             return
 
@@ -204,7 +204,7 @@ class _NotifyHandler(BaseHTTPRequestHandler):
         path = parsed.path
         params = {k: v[0] for k, v in parse_qs(parsed.query, keep_blank_values=True).items()}
 
-        if path == "/alipay/return":
+        if path in {"/payment/return", "/alipay/return"}:
             self._handle_return(path, params)
             return
 
@@ -224,8 +224,8 @@ class _NotifyHandler(BaseHTTPRequestHandler):
             "<h2>ByPay · 本地回调服务运行中</h2>"
             "<p>可用路径：</p>"
             "<ul>"
-            "<li><code>POST /alipay/notify</code> — 支付宝异步通知</li>"
-            "<li><code>GET /alipay/return</code> — 支付完成同步跳转</li>"
+            "<li><code>POST /payments/notify</code> — 支付异步通知</li>"
+            "<li><code>GET /payment/return</code> — 支付完成同步跳转</li>"
             "<li><code>GET /health</code> — 健康检查</li>"
             "</ul>"
             "<p style='color:#888'>这是本地测试服务，请勿用于生产环境。</p>"
@@ -406,7 +406,7 @@ class NotifyServer:
     def urls(self) -> dict:
         base = f"http://127.0.0.1:{self.port}"
         return {
-            "notify": f"{base}/alipay/notify",
-            "return": f"{base}/alipay/return",
+            "notify": f"{base}/payments/notify",
+            "return": f"{base}/payment/return",
             "health": f"{base}/health",
         }

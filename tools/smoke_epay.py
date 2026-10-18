@@ -140,7 +140,7 @@ def run():
                         page.screenshot(path=str(evidence/f'{version}-embedded-cashier.png'),full_page=True)
                         params={'app_id':'2026000000000000','seller_id':'2088000000000000','out_trade_no':row['platform_no'],'total_amount':'0.01','trade_no':'20261016'+row['platform_no'][-14:],'trade_status':'TRADE_SUCCESS','sign_type':'RSA2'}
                         params['sign']=base64.b64encode(provider.sign(AlipayClient.build_sign_content(params).encode(),padding.PKCS1v15(),hashes.SHA256())).decode()
-                        assert client.post(pay_origin+'/alipay/notify',data=params).text=='success'
+                        assert client.post(pay_origin+'/payments/notify',data=params).text=='success'
                         assert deliver_one(pay.extensions['store'],pay.extensions['webhook_signer'],pay.extensions['trace'],pay.extensions['callback_hosts'],local_origins=pay.extensions['callback_local_origins'])
                         assert client.get(demo_origin+'/api/state').json()['orders'][0]['status']=='PAID'
                     page.locator('#refresh').click();expect(page.locator('#payment-success')).to_be_visible(timeout=12000)
@@ -233,10 +233,10 @@ def run():
                             # a notice that is not WeChat's (encrypted with another key) changes nothing; the signed, encrypted one pays the order
                             wechat.pay(row['platform_no'])
                             forged_headers,forged_body=wechat.notification(row['platform_no'],key='f'*32)
-                            assert client.post(pay_origin+f"/wechat/notify/{row['platform_no']}",content=forged_body,headers=forged_headers).status_code==400
+                            assert client.post(pay_origin+f"/payments/notify/{row['platform_no']}",content=forged_body,headers=forged_headers).status_code==400
                             assert client.get(demo_origin+'/api/state').json()['orders'][0]['status']=='WAITING'
                             headers,body=wechat.notification(row['platform_no'])
-                            assert client.post(pay_origin+f"/wechat/notify/{row['platform_no']}",content=body,headers=headers).status_code==204
+                            assert client.post(pay_origin+f"/payments/notify/{row['platform_no']}",content=body,headers=headers).status_code==204
                             assert deliver_one(pay.extensions['store'],pay.extensions['webhook_signer'],pay.extensions['trace'],pay.extensions['callback_hosts'],sender=to_demo)
                             paid=client.get(demo_origin+'/api/state').json()['orders'][0]
                             assert paid['status']=='PAID' and paid['pay_type']=='wxpay' and paid['confirmed_by']=='notify',paid

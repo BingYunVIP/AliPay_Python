@@ -1,6 +1,6 @@
 <script setup>
 import { useRoute, useRouter } from 'vue-router'
-import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api, copyText, errorText, t } from '../state'
 import { status } from './format'
 import Icon from '../components/Icon.vue'
@@ -16,7 +16,7 @@ const channelName = computed(() => ({ alipay: t('支付宝', 'Alipay'), wechat: 
 const production = computed(() => channel.value === 'wechat' || selectedConfig.value?.environment === 'production')
 const product = ref('page'), amount = ref('0.01'), subject = ref(t('冰云支付测试订单', 'BingYun Pay test order'))
 const buyerType = ref('buyer_open_id'), buyerIdentity = ref(''), draftNumber = ref('')
-const busy = ref(false), error = ref(''), result = ref(null), terminalTab = ref('request'), copied = ref(false)
+const busy = ref(false), error = ref(''), result = ref(null), terminalTab = ref('request'), copied = ref(false), configOpen = ref(false)
 let disposed = false, copyTimer, poll
 const products = [{ id: 'page', zh: '网页支付', en: 'Web', icon: 'monitor' }, { id: 'wap', zh: '手机支付', en: 'Mobile', icon: 'phone' }, { id: 'app', zh: 'APP 支付', en: 'App', icon: 'app' }, { id: 'mini', zh: '小程序支付', en: 'Mini program', icon: 'grid' }]
 const requestBody = computed(() => ({ out_trade_no: draftNumber.value || result.value?.out_trade_no || 'PAY_TEST_ORDER', subject: subject.value, amount: amount.value, channel: channel.value, config_id: configId.value, product: product.value, ...(product.value === 'mini' ? { [channel.value === 'wechat' ? 'buyer_open_id' : buyerType.value]: buyerIdentity.value.trim() } : {}) }))
@@ -60,7 +60,36 @@ async function copy() {
   catch { c.toast(t('请选中报文手动复制', 'Select the payload to copy')) }
 }
 function checkout() { api(`/api/v1/payments/${result.value.out_trade_no}/checkout-opened`, { method: 'POST' }).catch(() => {}) }
-onBeforeUnmount(() => { disposed = true; clearInterval(poll); clearTimeout(copyTimer) })
+const picker = ref(null), activeConfig = ref(0)
+async function openConfig(index) {
+  if (busy.value || !configurations.value.length) return
+  activeConfig.value = index ?? Math.max(0, configurations.value.findIndex(ch => ch.config_id === configId.value))
+  configOpen.value = true
+  await nextTick()
+  picker.value?.querySelectorAll('[role="option"]')[activeConfig.value]?.focus()
+}
+async function closeConfig(restore = false) {
+  configOpen.value = false
+  if (restore) { await nextTick(); picker.value?.querySelector('.payment-config-trigger')?.focus() }
+}
+function selectConfig(id) { configId.value = id; closeConfig(true) }
+function configKey(event) {
+  const keys = ['ArrowDown', 'ArrowUp', 'Home', 'End', 'Escape']
+  if (!keys.includes(event.key)) return
+  event.preventDefault()
+  if (event.key === 'Escape') { closeConfig(true); return }
+  const count = configurations.value.length
+  if (!count) return
+  let index = configOpen.value ? activeConfig.value : Math.max(0, configurations.value.findIndex(ch => ch.config_id === configId.value))
+  if (event.key === 'Home') index = 0
+  else if (event.key === 'End') index = count - 1
+  else if (configOpen.value) index = (index + (event.key === 'ArrowDown' ? 1 : -1) + count) % count
+  openConfig(index)
+}
+function configFocusOut(event) { if (!picker.value?.contains(event.relatedTarget)) closeConfig() }
+function onDocumentPointerDown(event) { if (!event.target.closest('.payment-config-picker')) configOpen.value = false }
+onMounted(() => document.addEventListener('pointerdown', onDocumentPointerDown))
+onBeforeUnmount(() => { disposed = true; clearInterval(poll); clearTimeout(copyTimer); document.removeEventListener('pointerdown', onDocumentPointerDown) })
 </script>
 <template>
   <div class="console-page-heading"><h2>{{ t('测试支付', 'Test a payment') }}</h2><span class="state-badge" :class="production ? 'production' : 'neutral'">{{ production ? t('正式环境', 'Production') : t('沙箱环境', 'Sandbox') }}</span></div>
@@ -81,7 +110,7 @@ onBeforeUnmount(() => { disposed = true; clearInterval(poll); clearTimeout(copyT
         <p class="field-hint">{{ channel === 'wechat' ? t('使用当前 AppID 对应的小程序或公众号取得的付款用户 openid', 'Use the payer openid obtained through the mini program or official account of this AppID') : t('使用当前支付宝应用获取的付款用户标识', 'Use the payer identifier obtained through this Alipay app') }}</p>
       </div>
       <label>{{ t('收款渠道', 'Payment channel') }}</label>
-      <div class="payment-config-select"><Brand :name="selectedConfig?.id || 'alipay'" /><select v-model="configId" :disabled="busy" :aria-label="t('选择收款配置', 'Select payment configuration')"><option v-for="ch in configurations" :key="ch.config_id" :value="ch.config_id">{{ ch.name }}</option></select></div>
+      <div ref="picker" class="payment-config-picker" :class="{ open: configOpen }" @keydown="configKey" @focusout="configFocusOut"><button type="button" class="payment-config-trigger" :disabled="busy || !configurations.length" :aria-label="t('选择收款配置', 'Select payment configuration')" aria-haspopup="listbox" aria-controls="payment-config-options" :aria-expanded="configOpen" @click="configOpen ? closeConfig() : openConfig()"><Brand :name="selectedConfig?.id || 'alipay'" /><span>{{ selectedConfig?.name || t('暂无可用配置', 'No available configuration') }}</span><Icon name="chevron" :size="15" /></button><div v-if="configOpen" id="payment-config-options" class="payment-config-menu" role="listbox" :aria-label="t('收款配置选项', 'Payment configuration options')"><button v-for="(ch, index) in configurations" :key="ch.config_id" type="button" role="option" :tabindex="index === activeConfig ? 0 : -1" class="payment-config-option" :class="{ selected: ch.config_id === configId }" :aria-selected="ch.config_id === configId" @focus="activeConfig = index" @click="selectConfig(ch.config_id)"><Brand :name="ch.id" /><span>{{ ch.name }}</span><Icon v-if="ch.config_id === configId" name="check" :size="14" /></button></div></div>
       <div class="form-grid">
         <div><label for="test-amount">{{ t('金额（CNY）', 'Amount (CNY)') }}</label><div class="currency-input"><span>¥</span><input id="test-amount" v-model="amount" inputmode="decimal" pattern="[0-9]+(\.[0-9]{1,2})?" required :disabled="busy" /></div></div>
         <div><label for="test-subject">{{ t('商品名称', 'Item name') }}</label><input id="test-subject" v-model="subject" required maxlength="128" :disabled="busy" /></div>

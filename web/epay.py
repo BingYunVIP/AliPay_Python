@@ -25,7 +25,7 @@ def frame_origins(callback):
     return sorted(origins)
 
 
-def install_epay(app, merchants, auth, trace, create_payment, prepare_qr, ApiError):
+def install_epay(app, merchants, auth, trace, create_payment, prepare_qr, ApiError, close_provider_order):
     store = merchants.store
 
     def public_origin():
@@ -58,6 +58,25 @@ def install_epay(app, merchants, auth, trace, create_payment, prepare_qr, ApiErr
         trace('merchant.config','merchant_credentials_updated',{'merchant_id':result['merchant_id'],'signature_mode':result['signature_mode']},user_id=g.user['id'])
         result['interface_url']=public_origin()
         return jsonify(result)
+
+    @app.get('/api/merchant/payment-settings')
+    @auth(session_only=True)
+    def merchant_payment_settings():
+        user=target_user(); value=merchants.payment_settings(user)
+        value['platform_maximum_amount']=store.setting('max_amount',money(app.config['TEST_MAX_AMOUNT']))
+        value['platform_order_timeout_minutes']=merchants.site.read()['order_timeout_minutes']
+        if value['version'] == 0:
+            value['settings']['timeout_minutes']=value['platform_order_timeout_minutes']
+        return jsonify(value)
+
+    @app.put('/api/merchant/payment-settings')
+    @auth(session_only=True)
+    def merchant_payment_settings_save():
+        user=target_user()
+        try: value=merchants.save_payment_settings(user,request.get_json(silent=True),store.setting('max_amount',money(app.config['TEST_MAX_AMOUNT'])),merchants.site.read()['order_timeout_minutes'])
+        except ValueError as exc: raise ApiError(str(exc),409 if str(exc).endswith('_conflict') else 400) from None
+        trace('merchant.config','merchant_payment_settings_saved',{'version':value['version']},user_id=g.user['id'])
+        return jsonify(value)
 
     @app.get('/admin/uset.php')
     def old_admin_route():
@@ -98,7 +117,7 @@ def install_epay(app, merchants, auth, trace, create_payment, prepare_qr, ApiErr
 
     messages = {'invalid_signature':'签名校验失败，请检查商户 ID 和签名密钥','merchant_unavailable':'商户不存在或已停用',
                 'rsa_required':'此商户仅允许 RSA 签名','order_not_found':'订单号不存在','order_conflict':'同一商户订单号的参数发生变化',
-                'channel_not_integrated':'该收款渠道尚未接入','payment_not_configured':'收款渠道尚未配置','wechat_https_required':'微信支付需要平台使用公网 HTTPS 站点地址','wechat_no_auth':'微信支付商户号未开通该产品','wechat_app_id_mismatch':'微信支付 AppID 与商户号未绑定','invalid_merchant_callback':'商户回调地址未获允许','amount_exceeded':'金额超过平台单笔上限'}
+                'channel_not_integrated':'该收款渠道尚未接入','payment_not_configured':'收款渠道尚未配置','wechat_https_required':'微信支付需要平台使用公网 HTTPS 站点地址','wechat_no_auth':'微信支付商户号未开通该产品','wechat_app_id_mismatch':'微信支付 AppID 与商户号未绑定','invalid_merchant_callback':'商户回调地址未获允许','amount_exceeded':'金额超过平台单笔上限','merchant_amount_below_minimum':'金额低于商户最低限额','merchant_amount_above_maximum':'金额超过商户单笔限额','merchant_daily_limit_exceeded':'已超过商户每日限额','merchant_pending_limit_exceeded':'待支付订单数已达到商户上限','merchant_order_not_cancellable':'订单已支付或已结束，不能取消','merchant_cancel_pending':'取消请求正在处理中','merchant_cancel_limit_exceeded':'超过当前时段的主动取消次数上限','merchant_cancel_failed':'支付渠道未确认关闭订单','merchant_order_cancelled':'订单已关闭'}
     def endpoint(version, action):
         def decorate(fn):
             @wraps(fn)
@@ -138,13 +157,26 @@ def install_epay(app, merchants, auth, trace, create_payment, prepare_qr, ApiErr
         normalized={**params,'name':name,'money':amount,'type':epay_type}
         record=merchants.reserve(account,normalized,version)
         number=record['platform_no']
-        try: response=app.make_response(create_payment({'out_trade_no':number,'subject':name,'amount':amount,'channel':channel,'product':'page','notify_url':callback}))
-        except WechatError as exc: raise ApiError(exc.code) from None  # the merchant gets the same envelope as for any other refusal
-        if response.status_code>=400: raise ApiError((response.get_json(silent=True) or {}).get('error','payment_creation_failed'))
-        url=merchants.checkout_url(record,public_origin())
-        trace('merchant.create','epay_order_created',{'pid':account['pid'],'merchant_order_no':merchant_no,'version':version},number,account['user_id'])
-        if page: return redirect(url,303)
-        return result({'code':0,'trade_no':number,'pay_type':'jump','pay_info':url} if version=='v2' else {'code':1,'msg':'success','trade_no':number,'payurl':url},version)
+        try:
+            settings=merchants.payment_settings(account['user_id'])
+            cfg=settings['settings']; site_settings=merchants.site.read()
+            timeout=site_settings['order_timeout_minutes'] if settings['version']==0 else cfg['timeout_minutes']
+            if timeout>site_settings['order_timeout_minutes']: raise ApiError('invalid_merchant_payment_settings')
+            config_id=merchants.select_config(account['user_id'],channel,app.extensions['channels'])
+            response=app.make_response(create_payment({'out_trade_no':number,'subject':name,'amount':amount,'channel':channel,'product':'page','notify_url':callback,'merchant_order':True,'config_id':config_id,'merchant_fee_rate':cfg['fee_rate'],'merchant_timeout_minutes':timeout}))
+            if response.status_code>=400:
+                raise ApiError((response.get_json(silent=True) or {}).get('error','payment_creation_failed'))
+            merchants.reservation_state(number,'active'); merchants.consume_quota(number,account['user_id'])
+            url=merchants.checkout_url(record,public_origin())
+            trace('merchant.create','epay_order_created',{'pid':account['pid'],'merchant_order_no':merchant_no,'version':version},number,account['user_id'])
+            if page: return redirect(url,303)
+            return result({'code':0,'trade_no':number,'pay_type':'jump','pay_info':url} if version=='v2' else {'code':1,'msg':'success','trade_no':number,'payurl':url},version)
+        except WechatError as exc:
+            merchants.reservation_state(number,'failed'); merchants.consume_quota(number,account['user_id'])
+            raise ApiError(exc.code) from None  # the merchant gets the same envelope as for any other refusal
+        except Exception:
+            merchants.reservation_state(number,'failed'); merchants.consume_quota(number,account['user_id'])
+            raise
 
     @app.post('/mapi.php')
     @endpoint('v1','create')
@@ -167,6 +199,44 @@ def install_epay(app, merchants, auth, trace, create_payment, prepare_qr, ApiErr
         access=app.extensions['operations'].access(account['user_id'])
         return {'pid':account['pid'],'status':1,'pay_status':int(access['ready']),'order_num':count}
 
+    def cancel(params,account,version):
+        order=merchants.resolve(account,params)
+        if not order: raise ApiError('order_not_found')
+        merchant_order=merchants.order(order['out_trade_no'])
+        if not merchant_order or merchant_order['user_id']!=account['user_id']: raise ApiError('order_not_found')
+        settings=merchants.payment_settings(account['user_id'])['settings']
+        try: reservation=merchants.begin_cancel(account['user_id'],order['out_trade_no'],settings)
+        except ValueError as exc: raise ApiError(str(exc),409 if str(exc) in {'merchant_order_not_cancellable','merchant_cancel_pending','merchant_cancel_limit_exceeded'} else 404) from None
+        if reservation['idempotent']:
+            body={'code':0 if version=='v2' else 1,'msg':'订单已关闭','trade_no':order['out_trade_no'],'out_trade_no':merchant_order['merchant_no'],'status':1,'idempotent':True}
+            return result(body,version)
+        try:
+            answer=app.extensions['merchant_close_provider'](order)
+        except Exception:
+            merchants.finish_cancel(account['user_id'],order['out_trade_no'],False,'request_error')
+            current=store.order(order['out_trade_no'])
+            if current and current.get('paid_at'): raise ApiError('merchant_order_not_cancellable',409) from None
+            raise ApiError('merchant_cancel_failed',502) from None
+        confirmed=bool(answer.get('is_success'))
+        provider_state=str(answer.get('provider_state') or '')[:64]
+        finished=merchants.finish_cancel(account['user_id'],order['out_trade_no'],confirmed,provider_state)
+        trace('merchant.cancel','merchant_order_cancelled' if finished else 'merchant_cancel_failed',
+              {'channel':order['channel'],'provider_state':provider_state,'confirmed':confirmed},order['out_trade_no'],account['user_id'],accepted=finished)
+        if not finished:
+            current=store.order(order['out_trade_no'])
+            if current and current.get('paid_at'): raise ApiError('merchant_order_not_cancellable',409)
+            raise ApiError('merchant_cancel_failed',409)
+        body={'code':0 if version=='v2' else 1,'msg':'订单已关闭','trade_no':order['out_trade_no'],'out_trade_no':merchant_order['merchant_no'],'status':1}
+        return result(body,version)
+
+    @app.post('/api/pay/cancel')
+    @endpoint('v2','cancel')
+    def v2_cancel(params,account): return cancel(params,account,'v2')
+
+    @app.post('/api/pay/cancel-v1')
+    @endpoint('v1','cancel')
+    def v1_cancel(params,account): return cancel(params,account,'v1')
+
     @app.post('/api/merchant/info')
     @endpoint('v2','info')
     def v2_info(params,account): return result({'code':0,**info(account)},'v2')
@@ -182,7 +252,7 @@ def install_epay(app, merchants, auth, trace, create_payment, prepare_qr, ApiErr
     def v1_api():
         route=request.args.get('s')
         if route:
-            routes={'pay/create':v2_create,'pay/submit':v2_submit,'pay/query':v2_query,'merchant/info':v2_info}
+            routes={'pay/create':v2_create,'pay/submit':v2_submit,'pay/query':v2_query,'pay/cancel':v2_cancel,'merchant/info':v2_info}
             if route not in routes: return result({'code':-5,'msg':'接口方法不存在'},'v2')
             return routes[route]()
         try:
@@ -193,6 +263,7 @@ def install_epay(app, merchants, auth, trace, create_payment, prepare_qr, ApiErr
                 order=merchants.resolve(account,params)
                 if not order: raise ApiError('order_not_found')
                 return result({'code':1,**merchants.query(order)},'v1')
+            if action=='cancel': return cancel(params,account,'v1')
             raise ApiError('unsupported_method')
         except (ApiError,ValueError) as exc:
             code=exc.code if isinstance(exc,ApiError) else str(exc)
@@ -212,6 +283,7 @@ def install_epay(app, merchants, auth, trace, create_payment, prepare_qr, ApiErr
                 'amount':order['amount'],'channel':order['channel'],'status':'EXPIRED' if expired else order['status'],
                 'paid':bool(order['paid_at']),'expires_at':order['expires_at'],'qr_ready':bool(order['cashier_qr']),
                 'return_available':bool(record['return_url']), 'parent_origins':frame_origins(order['notify_url']), 'parent_origin':urlsplit(order['notify_url']).scheme+'://'+urlsplit(order['notify_url']).netloc}
+        data['layout'] = {key: merchants.site.read()[key] for key in ('cashier_ratio', 'cashier_width')}
         if inline: data['qr_svg']=qr_inline(order)  # the finished image, so that the page needs no second request for it
         return data
 

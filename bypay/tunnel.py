@@ -332,7 +332,7 @@ class QuickTunnel:
         """返回公网 notify / return 地址（无隧道时返回本机地址）。"""
         base = self.url
         if base:
-            return {"notify": f"{base}/alipay/notify", "return": f"{base}/alipay/return"}
+            return {"notify": f"{base}/payments/notify", "return": f"{base}/payment/return"}
         return {}
 
     def tail_log(self, lines: int = 20) -> list:

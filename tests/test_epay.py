@@ -51,7 +51,7 @@ class EpayTests(unittest.TestCase):
     def paid(self,number):
         data={'app_id':'2026000000000000','seller_id':'2088000000000000','out_trade_no':number,'total_amount':'0.01','trade_no':'20261016000000'+number[-8:],'trade_status':'TRADE_SUCCESS','sign_type':'RSA2'}
         data['sign']=base64.b64encode(self.provider_key.sign(AlipayClient.build_sign_content(data).encode(),padding.PKCS1v15(),hashes.SHA256())).decode()
-        self.assertEqual(self.client.post('/alipay/notify',data=data).data,b'success')
+        self.assertEqual(self.client.post('/payments/notify',data=data).data,b'success')
 
     def test_registration_gets_unique_merchant_identity_and_rsa_private_is_never_stored(self):
         response=self.client.post('/api/auth/register',json={'email':'new@example.test','password':'Test-password-123'})
@@ -94,6 +94,26 @@ class EpayTests(unittest.TestCase):
         denied=self.client.post('/api.php',data={'act':'order','pid':profile['merchant_id'],'key':profile['md5_key'],'trade_no':first['trade_no']}).json
         self.assertEqual(denied['error'],'order_not_found')
 
+    def test_failed_epay_creation_replay_rechecks_quota(self):
+        settings=self.merchants.payment_settings(self.user)
+        payload={**settings['settings'],'daily_limit':'0.01','version':settings['version']}
+        self.merchants.save_payment_settings(self.user,payload,'3000.00',self.app.extensions['site_settings'].read()['order_timeout_minutes'])
+        failed_fields=self.fields(out_trade_no='FAILED_ORDER_001')
+        with patch.object(self.store,'create_order',side_effect=RuntimeError('temporary failure')):
+            with self.assertRaises(RuntimeError):
+                self.client.post('/mapi.php',data=signed(failed_fields,self.profile['md5_key']))
+        with self.store.connect() as db:failed=dict(db.execute('SELECT * FROM merchant_orders WHERE user_id=? AND merchant_no=?',(self.user,'FAILED_ORDER_001')).fetchone())
+        self.assertEqual(failed['reservation_state'],'failed')
+        with self.store.connect() as db:
+            self.assertIsNone(db.execute('SELECT 1 FROM merchant_quota_reservations WHERE number=?',(failed['platform_no'],)).fetchone())
+        accepted=self.client.post('/mapi.php',data=signed(self.fields(out_trade_no='PAID_ORDER_002'),self.profile['md5_key']))
+        self.assertEqual(accepted.json['code'],1)
+        with self.store.connect() as db:db.execute('UPDATE orders SET paid_at=? WHERE out_trade_no=?',(int(time.time()),accepted.json['trade_no']))
+        retry=self.client.post('/mapi.php',data=signed(failed_fields,self.profile['md5_key']))
+        self.assertEqual(retry.json['error'],'merchant_daily_limit_exceeded')
+        with self.store.connect() as db:
+            self.assertIsNone(db.execute('SELECT 1 FROM merchant_quota_reservations WHERE number=?',(failed['platform_no'],)).fetchone())
+
     def test_rsa_only_mode_and_duplicate_parameters_do_not_allow_signature_bypass(self):
         params=signed(self.fields(),self.profile['md5_key'])
         params['money']='9.99';self.assertEqual(self.client.post('/mapi.php',data=params).json['code'],-3)
@@ -111,6 +131,7 @@ class EpayTests(unittest.TestCase):
         with self.client.get('/login') as page:self.assertEqual(page.headers['X-Frame-Options'],'DENY')
         state=self.client.get('/api/cashier/'+token).json
         self.assertEqual(state['out_trade_no'],'ORDER_SHARED_01');self.assertNotIn('md5_key',state)
+        self.assertEqual(state['layout'], {'cashier_ratio':'9:16','cashier_width':392})
         self.assertEqual(self.client.get('/api/cashier/bad-token').status_code,404)
         with patch('web.cashier.fetch_cashier_qr',return_value='https://qr.alipay.com/fixture'):
             self.assertEqual(self.client.post('/api/cashier/'+token+'/prepare',json={},headers={'Origin':'https://pay.example.test'}).status_code,200)

@@ -122,12 +122,12 @@ class MerchantDemoAgainstPayTests(unittest.TestCase):
         if order["pay_type"] == "wxpay":
             self.wechat.pay(number)
             headers, body = self.wechat.notification(number)
-            self.assertEqual(self.pay_client.post(f"/wechat/notify/{number}", data=body, headers=headers).status_code, 204)
+            self.assertEqual(self.pay_client.post(f"/payments/notify/{number}", data=body, headers=headers).status_code, 204)
             return
         data = {"app_id": "2026000000000000", "seller_id": "2088000000000000", "out_trade_no": number, "total_amount": "0.01", "trade_no": "20261017000000" + number[-8:],
                 "trade_status": "TRADE_SUCCESS", "sign_type": "RSA2"}
         data["sign"] = base64.b64encode(self.alipay_platform.sign(AlipayClient.build_sign_content(data).encode(), padding.PKCS1v15(), hashes.SHA256())).decode()
-        self.assertEqual(self.pay_client.post("/alipay/notify", data=data).data, b"success")
+        self.assertEqual(self.pay_client.post("/payments/notify", data=data).data, b"success")
 
     def deliver_callback(self):
         """Pay's worker hands the signed merchant notification to the demo's /notify."""

@@ -39,14 +39,14 @@ class OperationalSettingsTests(unittest.TestCase):
 
     def test_edit_routing_is_persistent_used_by_new_orders_and_keeps_old_links(self):
         old = self.create().json['order']
-        saved = self.save(origin='https://pay.new.example', notify_url='https://notify.example/alipay/notify',
-                          return_url='https://pay.new.example/alipay/return', callback_hosts=['merchant.example'])
+        saved = self.save(origin='https://pay.new.example', notify_url='https://notify.example/payments/notify',
+                          return_url='https://pay.new.example/payment/return', callback_hosts=['merchant.example'])
         self.assertEqual(saved.status_code, 200)
         changed = self.create(out_trade_no='TEST_ORDER_0002', notify_url='https://merchant.example/paid')
         self.assertEqual(changed.status_code, 201)
         query = parse_qs(urlsplit(changed.json['order']['pay_url']).query)
-        self.assertEqual(query['notify_url'], ['https://notify.example/alipay/notify'])
-        self.assertTrue(query['return_url'][0].startswith('https://pay.new.example/alipay/return?state='))
+        self.assertEqual(query['notify_url'], ['https://notify.example/payments/notify'])
+        self.assertTrue(query['return_url'][0].startswith('https://pay.new.example/payment/return?state='))
         self.assertEqual(self.store.order(old['out_trade_no'])['pay_url'], old['pay_url'])
         self.assertEqual(self.notify(self.notification()).data, b'success')
         restarted = create_app(dict(self.app.config))
@@ -67,11 +67,11 @@ class OperationalSettingsTests(unittest.TestCase):
     def test_invalid_settings_are_atomic_and_field_errors_identify_the_problem(self):
         invalid = [({'origin': 'https://user:pass@evil.example'}, 'origin'),
                    ({'origin': 'https://[bad'}, 'origin'),
-                   ({'return_url': 'https://[bad/alipay/return'}, 'return_url'),
+                   ({'return_url': 'https://[bad/payment/return'}, 'return_url'),
                    ({'origin': 'http://localhost:8000'}, 'origin'),
                    ({'notify_url': 'https://test.bingyun.vip/notify'}, 'notify_url'),
-                   ({'notify_url': 'http://localhost:8000/alipay/notify'}, 'notify_url'),
-                   ({'return_url': 'https://pay.example/alipay/return?state=bad'}, 'return_url'),
+                   ({'notify_url': 'http://localhost:8000/payments/notify'}, 'notify_url'),
+                   ({'return_url': 'https://pay.example/payment/return?state=bad'}, 'return_url'),
                    ({'callback_hosts': ['127.0.0.1', '*.example']}, 'callback_hosts'),
                    ({'order_timeout_minutes': 0}, 'order_timeout_minutes'),
                    ({'poll_interval_seconds': True}, 'poll_interval_seconds'),
@@ -87,6 +87,18 @@ class OperationalSettingsTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 400)
                 self.assertEqual(response.json['field'], field)
                 self.assertTrue(self.app.extensions['site_settings'].read()['registration'])
+
+    def test_cashier_layout_is_validated_and_persisted(self):
+        site = self.app.extensions['site_settings']
+        self.assertEqual((site.read()['cashier_ratio'], site.read()['cashier_width']), ('9:16', 392))
+        for ratio in ('9:16', '3:4', '1:1', '16:10'):
+            self.assertEqual(self.save(cashier_ratio=ratio, cashier_width=640).status_code, 200)
+            self.assertEqual(site.read()['cashier_ratio'], ratio)
+        for field, value in (('cashier_ratio', '4:0'), ('cashier_ratio', []), ('cashier_width', 319), ('cashier_width', 1201), ('cashier_width', True)):
+            response = self.save(**{field: value})
+            self.assertEqual((response.status_code, response.json['field']), (400, field))
+        restarted = create_app(dict(self.app.config))
+        self.assertEqual((restarted.extensions['site_settings'].read()['cashier_ratio'], restarted.extensions['site_settings'].read()['cashier_width']), ('16:10', 640))
 
     def test_registration_only_accepts_the_configured_email_domains(self):
         from web.settings import EMAIL_DOMAINS_DEFAULT

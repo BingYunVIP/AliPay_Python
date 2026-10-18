@@ -91,11 +91,11 @@ class ProductTests(unittest.TestCase):
     def test_network_retry_keeps_original_callback_after_settings_change(self):
         with patch(TRANSPORT, side_effect=TimeoutError()):
             self.create(product='mini', buyer_id='2088000000000001')
-        self.app.extensions['site_settings'].save({'notify_url': 'https://next.example/alipay/notify'})
+        self.app.extensions['site_settings'].save({'notify_url': 'https://next.example/payments/notify'})
         with patch(TRANSPORT, return_value=self.wire()) as sender:
             result = self.create(product='mini', buyer_id='2088000000000001')
         self.assertEqual(result.status_code, 200)
-        self.assertEqual(parse_qs(sender.call_args.args[1])['notify_url'], ['https://pay.example.test/alipay/notify'])
+        self.assertEqual(parse_qs(sender.call_args.args[1])['notify_url'], ['https://pay.example.test/payments/notify'])
         self.assertNotIn('provider_notify_url', result.json['order'])
 
     def test_removed_qr_product_is_rejected(self):

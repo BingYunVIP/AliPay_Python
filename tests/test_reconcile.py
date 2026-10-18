@@ -135,7 +135,7 @@ class ReconciliationTests(unittest.TestCase):
     def test_return_token_only_locates_order_and_never_confirms_payment(self):
         token = self.token(self.create())
         visitor = self.app.test_client()
-        response = visitor.get('/alipay/return?' + urlencode({'state': token, 'trade_status': 'TRADE_SUCCESS', 'total_amount': '100', 'out_trade_no': 'WRONG_ORDER'}))
+        response = visitor.get('/payment/return?' + urlencode({'state': token, 'trade_status': 'TRADE_SUCCESS', 'total_amount': '100', 'out_trade_no': 'WRONG_ORDER'}))
         self.assertEqual(response.location, '/payment-return#state=' + token)
         self.assertEqual(self.store.order('TEST_ORDER_0001')['status'], 'CREATED')
         with patch(TRANSPORT, return_value=self.wire_response()):
@@ -153,7 +153,7 @@ class ReconciliationTests(unittest.TestCase):
         for candidate in ['', 'TEST_ORDER_0001', 'a' * 43, {'state': token}]:
             self.assertEqual(self.client.post('/api/payment-result', json={'state': candidate}).status_code, 404)
         self.assertEqual(self.client.post('/api/payment-result', json={'state': token}, headers={'Origin': 'https://evil.test'}).status_code, 403)
-        self.assertEqual(self.client.get('/alipay/return?state=' + token + '&state=' + token).location, '/payment-return')
+        self.assertEqual(self.client.get('/payment/return?state=' + token + '&state=' + token).location, '/payment-return')
         with self.store.connect() as db:
             self.assertNotEqual(db.execute('SELECT hash FROM payment_returns').fetchone()[0], token)
             db.execute('UPDATE payment_returns SET expires=0')
@@ -164,8 +164,8 @@ class ReconciliationTests(unittest.TestCase):
         visitor = self.app.test_client()
         params = self.notification()
         unsigned = {**params, 'sign': 'invalid'}
-        self.assertEqual(visitor.get('/alipay/return?' + urlencode(unsigned)).location, '/payment-return')
-        response = visitor.get('/alipay/return?' + urlencode(params))
+        self.assertEqual(visitor.get('/payment/return?' + urlencode(unsigned)).location, '/payment-return')
+        response = visitor.get('/payment/return?' + urlencode(params))
         token = parse_qs(urlsplit(response.location).fragment)['state'][0]
         self.assertEqual(self.store.return_order(token)['out_trade_no'], 'TEST_ORDER_0001')
         self.assertEqual(self.store.order('TEST_ORDER_0001')['status'], 'CREATED')
@@ -178,17 +178,19 @@ class ReconciliationTests(unittest.TestCase):
         response = self.create()
         query = parse_qs(urlsplit(response.json['order']['pay_url']).query)
         self.assertNotIn('notify_url', query)
-        self.assertTrue(query['return_url'][0].startswith('http://127.0.0.1:8000/alipay/return?state='))
+        self.assertTrue(query['return_url'][0].startswith('http://127.0.0.1:8000/payment/return?state='))
         with patch(TRANSPORT, return_value=self.wire_response()):
             self.assertEqual(local.extensions['reconciler'].sync('TEST_ORDER_0001')['order']['status'], 'PAID')
 
     def test_public_notification_and_browser_origins_are_independent(self):
         cfg = payment_config({'PUBLIC_BASE_URL': 'http://localhost:8000', 'ALIPAY_NOTIFY_URL': 'https://tunnel.example.test/alipay/notify'})
-        self.assertEqual(cfg['return_url'], 'http://localhost:8000/alipay/return')
-        self.assertEqual(cfg['notify_url'], 'https://tunnel.example.test/alipay/notify')
+        self.assertEqual(cfg['return_url'], 'http://localhost:8000/payment/return')
+        self.assertEqual(cfg['notify_url'], 'https://tunnel.example.test/payments/notify')
+        neutral = payment_config({'PUBLIC_BASE_URL': 'https://pay.example.test', 'BYPAY_NOTIFY_URL': 'https://notify.example/payments/notify'})
+        self.assertEqual(neutral['notify_url'], 'https://notify.example/payments/notify')
         production = payment_config({'PUBLIC_BASE_URL': 'https://pay.bingyun.vip'})
-        self.assertEqual(production['notify_url'], 'https://pay.bingyun.vip/alipay/notify')
-        for url in ['http://localhost:8000/alipay/notify', 'https://test.bingyun.vip/notify', 'https://user@pay.bingyun.vip/alipay/notify']:
+        self.assertEqual(production['notify_url'], 'https://pay.bingyun.vip/payments/notify')
+        for url in ['http://localhost:8000/payments/notify', 'https://test.bingyun.vip/notify', 'https://user@pay.bingyun.vip/payments/notify']:
             with self.assertRaises(ValueError):
                 payment_config({'PUBLIC_BASE_URL': 'http://localhost:8000', 'ALIPAY_NOTIFY_URL': url})
 

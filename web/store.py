@@ -216,13 +216,15 @@ class Store:
 
     def create_order(self, user_id, payload, pay_url, cfg, return_token=None, payment_payload=None, request_hash=None, client_ip=""):
         with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
             db.execute("INSERT INTO orders(out_trade_no,user_id,subject,amount,product,channel,pay_url,app_id,seller_id,created_at,notify_url,channel_version,client_ip) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                        (payload["out_trade_no"], user_id, payload["subject"], payload["amount"], payload["product"], payload.get("channel", "alipay"), pay_url, cfg["app_id"], cfg["seller_id"], int(time.time()), payload.get("notify_url", ""), cfg.get("channel_version"), client_ip))
             db.execute("UPDATE orders SET expires_at=?,payment_payload=?,request_hash=? WHERE out_trade_no=?", (cfg.get("expires_at", int(time.time()) + 900), json.dumps(payment_payload or {}), request_hash, payload["out_trade_no"]))
             db.execute("UPDATE orders SET provider_notify_url=?,provider_return_url=? WHERE out_trade_no=?", (cfg.get("notify_url", ""), cfg.get("return_url", ""), payload["out_trade_no"]))
             db.execute("UPDATE orders SET payment_config_id=? WHERE out_trade_no=?", (cfg.get("payment_config_id"), payload["out_trade_no"]))
             db.execute("INSERT INTO payment_checks(out_trade_no,next_check) VALUES (?,?)", (payload["out_trade_no"], int(time.time()) + self.setting("poll_interval_seconds", 10)))
-            if hasattr(self,'operations'):self.operations.snapshot(db,user_id,payload['out_trade_no'],payload['amount'])
+            if hasattr(self,'operations'):self.operations.snapshot(db,user_id,payload['out_trade_no'],payload['amount'],cfg.get('merchant_fee_rate'))
+            db.execute('DELETE FROM merchant_quota_reservations WHERE number=?',(payload['out_trade_no'],))
             if return_token:
                 db.execute("INSERT INTO payment_returns VALUES (?,?,?)", (digest(return_token), payload["out_trade_no"], int(time.time()) + 86400))
         return self.order(payload["out_trade_no"])

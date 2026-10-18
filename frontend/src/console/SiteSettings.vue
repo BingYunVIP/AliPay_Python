@@ -13,7 +13,7 @@ let hydrating = false
 c.guard(() => dirty.value)
 
 const read = value => ({
-  registration: !!value.registration, max_amount: value.max_amount,
+  registration: !!value.registration, max_amount: value.max_amount, cashier_ratio: value.cashier_ratio, cashier_width: value.cashier_width,
   order_timeout_minutes: value.order_timeout_minutes, poll_interval_seconds: value.poll_interval_seconds, query_window_minutes: value.query_window_minutes,
   callback_first_delay_seconds: value.callback_first_delay_seconds, callback_timeout_seconds: value.callback_timeout_seconds, callback_retry_interval_seconds: value.callback_retry_interval_seconds,
   origin: value.origin, notify_url: value.notify_url, return_url: value.return_url,
@@ -32,8 +32,8 @@ watch(() => draft.origin, value => {
   if (hydrating) return
   const origin = String(value || '').trim().replace(/\/$/, '')
   draft.origin = origin
-  draft.notify_url = origin.startsWith('https://') ? `${origin}/alipay/notify` : ''
-  draft.return_url = origin ? `${origin}/alipay/return` : ''
+  draft.notify_url = origin.startsWith('https://') ? `${origin}/payments/notify` : ''
+  draft.return_url = origin ? `${origin}/payment/return` : ''
 })
 
 const invalid = key => error.value?.field === key
@@ -69,6 +69,15 @@ async function save() {
         </FormRow>
       </FormGroup>
 
+      <FormGroup :title="t('收银台版心', 'Checkout layout')">
+        <FormRow field="site-cashier_ratio" :label="t('版心比例', 'Aspect ratio')" :error="message('cashier_ratio')">
+          <select id="site-cashier_ratio" v-model="draft.cashier_ratio" class="field" :disabled="busy" v-bind="aria('cashier_ratio')"><option v-for="ratio in ['9:16', '3:4', '1:1', '16:10']" :key="ratio" :value="ratio">{{ ratio }}</option></select>
+        </FormRow>
+        <FormRow field="site-cashier_width" :label="t('版心宽度', 'Content width')" :error="message('cashier_width')">
+          <div class="unit-field"><input id="site-cashier_width" v-model.number="draft.cashier_width" class="field" type="number" min="320" max="1200" step="1" required :disabled="busy" v-bind="aria('cashier_width')" /><span class="unit">px</span></div>
+        </FormRow>
+      </FormGroup>
+
       <FormGroup :title="t('订单与支付时间', 'Order & payment timing')">
         <FormRow field="site-order_timeout_minutes" :label="t('订单有效期', 'Order validity')" :hint="t('新订单的付款截止时间，已有订单保持原期限', 'Payment deadline for new orders; existing orders keep theirs')" :error="message('order_timeout_minutes')">
           <div class="unit-field"><input id="site-order_timeout_minutes" name="order_timeout_minutes" v-model.number="draft.order_timeout_minutes" class="field" type="number" min="1" max="1440" step="1" required :disabled="busy" v-bind="aria('order_timeout_minutes')" /><span class="unit">{{ t('分钟', 'min') }}</span></div>
@@ -98,10 +107,10 @@ async function save() {
           <input id="site-origin" name="origin" v-model.trim="draft.origin" class="field" type="url" placeholder="https://pay.bingyun.vip" autocomplete="off" spellcheck="false" required :disabled="busy" v-bind="aria('origin')" />
         </FormRow>
         <FormRow field="site-notify_url" stacked :label="t('异步通知地址', 'Asynchronous notification URL')" :hint="t('由站点地址自动填写；本地没有公网入口时留空', 'Filled in from the site address; left blank when there is no public entry')" :error="message('notify_url')">
-          <input id="site-notify_url" name="notify_url" v-model.trim="draft.notify_url" class="field" type="url" placeholder="https://pay.bingyun.vip/alipay/notify" autocomplete="off" spellcheck="false" :disabled="busy" v-bind="aria('notify_url')" />
+          <input id="site-notify_url" name="notify_url" v-model.trim="draft.notify_url" class="field" type="url" placeholder="https://pay.bingyun.vip/payments/notify" autocomplete="off" spellcheck="false" :disabled="busy" v-bind="aria('notify_url')" />
         </FormRow>
         <FormRow field="site-return_url" stacked :label="t('同步返回地址', 'Browser return URL')" :hint="t('由站点地址自动填写', 'Filled in from the site address')" :error="message('return_url')">
-          <input id="site-return_url" name="return_url" v-model.trim="draft.return_url" class="field" type="url" placeholder="https://pay.bingyun.vip/alipay/return" autocomplete="off" spellcheck="false" required :disabled="busy" v-bind="aria('return_url')" />
+          <input id="site-return_url" name="return_url" v-model.trim="draft.return_url" class="field" type="url" placeholder="https://pay.bingyun.vip/payment/return" autocomplete="off" spellcheck="false" required :disabled="busy" v-bind="aria('return_url')" />
         </FormRow>
         <FormRow field="site-callback_hosts" stacked :label="t('商户回调域名白名单', 'Allowed merchant callback domains')" :hint="t('输入域名后按回车添加，自动去掉 http(s):// 与路径；用于接收 Pay 发出的业务回调', 'Press Enter to add a domain; scheme and path are removed. Pay only calls these hosts')" :error="message('callback_hosts')">
           <TagInput id="site-callback_hosts" v-model="draft.callback_hosts" normalize="domain" linkable :placeholder="t('test.bingyun.vip', 'test.bingyun.vip')" :disabled="busy" />

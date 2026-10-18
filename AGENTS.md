@@ -8,7 +8,7 @@
 - V2 商户私钥由商户持有，Pay 保存商户公钥；Pay 私钥签响应/回调，商户使用平台公钥验签
 - 测试站创建订单后嵌入 Pay 收银台，由 Pay 生成真实渠道二维码；测试站根据已验证的服务端回调/查询确认成功，浏览器跳转或 postMessage 不是到账凭证
 - 本地开发主站端口 888、测试站 8100；同样保留验签、金额/归属校验、幂等和真实状态查询
-- VPS 域名：pay.bingyun.vip 属于主站，test.bingyun.vip 属于独立商户测试站，支付宝通知入口为 Pay 的 /alipay/notify
+- VPS 域名：pay.bingyun.vip 属于主站，test.bingyun.vip 属于独立商户测试站，支付平台异步通知入口为 Pay 的 /payments/notify
 - 不使用 Docker；主站 ByPay.sh 菜单部署，测试站 run.sh 前台运行，停止脚本即停止测试站
 - 延续 ByHome_UI / Google_UI/bypay_V1、苹果 HIG、鸿蒙字体设计；避免自行增加宣传段落和装饰；中文界面文案末尾不加句号
 - 保留订单、账户、渠道密钥、回调收据和当前运行需要的资源；清理缓存、临时测试产物及超过保留期的轮转日志，不能删当前运行构建或尚需排查的支付日志；data/logs 和 data/local/logs 都是本机服务正在写的日志（测试也会往 data/logs 写），只用 tools/cleanup.py 清理过期轮转文件，不要手工修剪

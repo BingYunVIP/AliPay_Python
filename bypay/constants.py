@@ -132,7 +132,7 @@ CONFIG_FIELDS = [
         "secret": False,
         "help": "支付成功后，支付宝服务器「后台悄悄」POST 到该地址（必须公网可达）",
         "where": (
-            "填写你服务器的公网地址，例如 https://你的域名/alipay/notify\n"
+            "填写你服务器的公网地址，例如 https://你的域名/payments/notify\n"
             "⚠️ 本地无公网地址时可留空：本工具会用「主动查询订单」方式检测支付结果"
         ),
     },

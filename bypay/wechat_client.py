@@ -36,7 +36,7 @@ FRESHNESS_SECONDS = 600
 # 微信支付错误码 → 控制台可解释的稳定代码
 PROVIDER_ERRORS = {
     "SIGN_ERROR": "wechat_sign_error", "APPID_MCHID_NOT_MATCH": "wechat_app_id_mismatch", "MCH_NOT_EXISTS": "wechat_mch_not_exists",
-    "NO_AUTH": "wechat_no_auth", "OUT_TRADE_NO_USED": "wechat_order_number_used", "ORDER_CLOSED": "wechat_order_closed",
+    "NO_AUTH": "wechat_no_auth", "OUT_TRADE_NO_USED": "wechat_order_number_used", "ORDER_CLOSED": "wechat_order_closed", "ORDER_PAID": "wechat_order_paid",
     "FREQUENCY_LIMITED": "wechat_rate_limited", "RULE_LIMIT": "wechat_rule_limit", "PARAM_ERROR": "wechat_param_error",
     "INVALID_REQUEST": "wechat_invalid_request", "NOT_ENOUGH": "wechat_refund_balance", "USER_ACCOUNT_ABNORMAL": "wechat_refund_user_abnormal",
     "TRADE_OVERDUE": "wechat_refund_overdue", "REFUND_AMOUNT_EXCEED": "refund_exceeds_remaining", "SYSTEM_ERROR": "wechat_system_error",
@@ -129,7 +129,7 @@ class WechatClient:
         return True
 
     # ------------------------------------------------------------------ 请求
-    def _request(self, method: str, path: str, query: dict | None = None, body: dict | None = None) -> dict:
+    def _request(self, method: str, path: str, query: dict | None = None, body: dict | None = None, expected_status: int | None = None) -> dict:
         target = path + ("?" + urlencode(query) if query else "")
         payload = json.dumps(body, separators=(",", ":"), ensure_ascii=False) if body is not None else ""
         headers = {"Authorization": self._authorization(method, target, payload), "Accept": "application/json",
@@ -144,6 +144,10 @@ class WechatClient:
             raise WechatError("无法连接微信支付：" + type(exc).__name__, "wechat_network_error") from None
         if 200 <= response.status_code < 300:
             self.verify(response.headers, response.content)
+            if expected_status is not None and response.status_code != expected_status:
+                raise WechatError("微信支付返回了意外的状态码", "wechat_system_error", response.status_code)
+            if expected_status == 204 and response.content:
+                raise WechatError("微信支付 204 响应不应包含内容", "wechat_system_error", response.status_code)
             try:
                 data = response.json() if response.content else {}
             except ValueError:
@@ -243,6 +247,23 @@ class WechatClient:
         logger.info("wechat", "交易查询完成", 订单号=number, 交易状态=result["trade_state"])
         return result
 
+    # ------------------------------------------------------------------ 关单
+    def close(self, number: str) -> dict:
+        """关闭未支付订单；只有验签通过的 HTTP 204 才算关闭成功。"""
+        try:
+            self._request(
+                "POST",
+                f"/v3/pay/transactions/out-trade-no/{number}/close",
+                body={"mchid": self.mch_id},
+                expected_status=204,
+            )
+        except WechatError as exc:
+            # 微信明确答复 ORDER_CLOSED 时，订单已经处于目标状态；只有验签
+            # 通过才能把这个答复当作 provider 的确定结论，否则结果不确定。
+            if exc.provider_code != "ORDER_CLOSED" or exc.signature is not True:
+                raise
+        logger.info("wechat", "交易关闭完成", 订单号=number)
+        return {"is_success": True, "out_trade_no": number, "trade_state": "CLOSED"}
     # ------------------------------------------------------------------ 退款
     @staticmethod
     def _refund_result(data: dict) -> dict:

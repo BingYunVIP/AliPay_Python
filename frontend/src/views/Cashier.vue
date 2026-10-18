@@ -11,6 +11,11 @@ const base = computed(() => `/api/cashier/${encodeURIComponent(route.params.toke
 const waiting = computed(() => order.value?.status === 'CREATED' && order.value.expires_at * 1000 > now.value)
 // the finished image comes with the order when it is ready, so no second request is needed to show it
 const qrSource = computed(() => qrSvg.value ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(qrSvg.value)}` : `${base.value}/qr.svg?v=${qrVersion.value}`)
+const layout = computed(() => {
+  const ratio = String(order.value?.layout?.cashier_ratio || '9:16').split(':').map(Number)
+  const width = Number(order.value?.layout?.cashier_width) || 392
+  return { '--cashier-w': `${width}px`, '--cashier-ratio': `${ratio[0]} / ${ratio[1]}`, '--cashier-height-factor': ratio[1] / ratio[0] }
+})
 const provider = computed(() => order.value?.channel === 'wechat' ? t('微信支付', 'WeChat Pay') : t('支付宝', 'Alipay'))
 const scanName = computed(() => order.value?.channel === 'wechat' ? t('微信', 'WeChat') : t('支付宝', 'Alipay'))
 let timer, posted = false, polling = false
@@ -60,7 +65,7 @@ onMounted(async () => {
 onBeforeUnmount(() => window.clearInterval(timer))
 </script>
 <template>
-  <main class="pay-cashier">
+  <main class="pay-cashier" :style="layout">
     <header class="cashier-head">
       <div class="cashier-brand"><Brand name="bingyun"/><span>{{ t('冰云支付', 'BingYun Pay') }}</span></div>
       <a v-if="order?.paid && order.return_available" class="cashier-action" :href="`${base}/return`" target="_top">{{ t('返回站点', 'Back to site') }}<Icon name="arrow" :size="14"/></a>
@@ -92,8 +97,8 @@ onBeforeUnmount(() => window.clearInterval(timer))
   </main>
 </template>
 <style scoped>
-/* 固定版心：手机上占满宽度，桌面上是一张居中的卡片（9:16 的手机比例） */
-.pay-cashier{--cashier-w:392px;box-sizing:border-box;width:100%;max-width:var(--cashier-w);min-height:min(660px,100svh);margin:0 auto;padding:20px 24px 30px;display:flex;flex-direction:column;color:var(--text,#f1f5fc);font-family:var(--font-body,inherit)}
+/* 版心宽度与比例来自站点设置，内容较长时自然撑开，窄屏保持可读 */
+.pay-cashier{--cashier-w:392px;box-sizing:border-box;width:100%;max-width:var(--cashier-w);aspect-ratio:var(--cashier-ratio,9 / 16);min-height:0;margin:0 auto;padding:20px 24px 30px;display:flex;flex-direction:column;color:var(--text,#f1f5fc);font-family:var(--font-body,inherit)}
 .cashier-head{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:36px}
 .cashier-brand{display:flex;align-items:center;gap:9px;font-size:14px;font-weight:500;letter-spacing:-.01em}
 .cashier-brand :deep(svg),.cashier-brand :deep(img){width:24px;height:24px}
@@ -112,5 +117,5 @@ onBeforeUnmount(() => window.clearInterval(timer))
 .cashier-done h1{margin:4px 0 0;font-size:22px;font-weight:600;letter-spacing:-.02em}
 .cashier-done p{margin:0;color:var(--faint,#7d8ba1);font-size:12px}
 .pay-cashier .error-box{text-align:left;overflow-wrap:anywhere;margin-top:20px}
-@media (max-width:460px){.pay-cashier{--cashier-w:100%;padding:18px 18px 26px}.cashier-subject{margin-top:26px;font-size:17px}.cashier-amount{font-size:28px}.cashier-qr{width:min(252px,78vw);margin-top:22px}}
+@media (max-width:460px){.pay-cashier{padding:18px 18px 26px}.cashier-subject{margin-top:26px;font-size:17px}.cashier-amount{font-size:28px}.cashier-qr{width:min(252px,78vw);margin-top:22px}}
 </style>

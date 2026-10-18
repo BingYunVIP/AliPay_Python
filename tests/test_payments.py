@@ -66,7 +66,7 @@ class PaymentTests(unittest.TestCase):
         return params
 
     def notify(self, params):
-        return self.client.post("/alipay/notify", data=params)
+        return self.client.post("/payments/notify", data=params)
 
     def test_order_records_the_real_client_ip_behind_a_local_proxy(self):
         order = self.create().json["order"]
@@ -81,7 +81,7 @@ class PaymentTests(unittest.TestCase):
         order = response.json["order"]
         self.assertEqual(order["status"], "CREATED")
         query = parse_qs(urlsplit(order["pay_url"]).query)
-        self.assertEqual(query["notify_url"], ["https://pay.example.test/alipay/notify"])
+        self.assertEqual(query["notify_url"], ["https://pay.example.test/payments/notify"])
         self.assertEqual(query["method"], ["alipay.trade.page.pay"])
         self.assertEqual(json.loads(query["biz_content"][0])["total_amount"], "0.01")
         self.assertIn("sign", query)
@@ -145,10 +145,10 @@ class PaymentTests(unittest.TestCase):
         self.create()
         params = MultiDict(self.notification())
         params.add("total_amount", "0.02")
-        self.assertEqual(self.client.post("/alipay/notify", data=params).status_code, 400)
-        self.assertEqual(self.client.post("/alipay/notify?app_id=other", data=self.notification()).status_code, 400)
-        self.assertEqual(self.client.post("/alipay/notify", data=b"x" * 40000).status_code, 413)
-        self.assertEqual(self.client.post("/prefix/alipay/notify", data=self.notification()).status_code, 405)
+        self.assertEqual(self.client.post("/payments/notify", data=params).status_code, 400)
+        self.assertEqual(self.client.post("/payments/notify?app_id=other", data=self.notification()).status_code, 400)
+        self.assertEqual(self.client.post("/payments/notify", data=b"x" * 40000).status_code, 413)
+        self.assertEqual(self.client.post("/prefix/payments/notify", data=self.notification()).status_code, 405)
 
     def test_paid_order_cannot_be_downgraded_or_rebound(self):
         self.create()
@@ -160,9 +160,22 @@ class PaymentTests(unittest.TestCase):
         self.assertEqual(self.notify(self.notification(out_trade_no="TEST_ORDER_0002")).data, b"failure")
         self.assertEqual(self.store.order("TEST_ORDER_0002")["status"], "CREATED")
 
+    def test_legacy_alipay_notify_and_return_routes_remain_compatible(self):
+        self.create()
+        notice = self.notification()
+        self.assertEqual(self.client.post('/alipay/notify', data=notice).data, b'success')
+        self.assertEqual(self.store.order('TEST_ORDER_0001')['status'], 'PAID')
+
+        self.create(out_trade_no='TEST_ORDER_0002')
+        params = self.notification(out_trade_no='TEST_ORDER_0002', trade_no='20261015000000012346')
+        returned = self.client.get('/alipay/return?' + urlencode(params))
+        self.assertEqual(returned.status_code, 303)
+        self.assertTrue(returned.location.startswith('/payment-return#state='))
+        self.assertEqual(self.store.order('TEST_ORDER_0002')['status'], 'CREATED')
+
     def test_browser_return_is_untrusted_and_never_marks_paid(self):
         self.create()
-        response = self.client.get("/alipay/return?" + urlencode({"out_trade_no": "<script>alert(1)</script>", "trade_status": "TRADE_SUCCESS"}))
+        response = self.client.get("/payment/return?" + urlencode({"out_trade_no": "<script>alert(1)</script>", "trade_status": "TRADE_SUCCESS"}))
         self.assertEqual(response.status_code, 303)
         self.assertEqual(response.location, "/payment-return")
         self.assertNotIn(b"<script>", response.data)
@@ -229,7 +242,7 @@ class PaymentTests(unittest.TestCase):
             self.assertEqual(self.create(notify_url=url).status_code, 400)
         response = self.create(notify_url="https://test.bingyun.vip/notify")
         self.assertEqual(response.status_code, 201)
-        self.assertEqual(parse_qs(urlsplit(response.json["order"]["pay_url"]).query)["notify_url"], ["https://pay.example.test/alipay/notify"])
+        self.assertEqual(parse_qs(urlsplit(response.json["order"]["pay_url"]).query)["notify_url"], ["https://pay.example.test/payments/notify"])
 
     def test_callback_outbox_deduplicates_and_signs_merchant_event(self):
         self.create(notify_url="https://test.bingyun.vip/notify")

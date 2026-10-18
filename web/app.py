@@ -55,19 +55,26 @@ def payment_config(config):
     local = parsed.hostname in {"localhost", "127.0.0.1", "[::1]", "::1"}
     if parsed.scheme != "https" and not (parsed.scheme == "http" and (local or config.get("BYPAY_ALLOW_HTTP") == "1")):
         raise ValueError("PUBLIC_BASE_URL requires HTTPS outside localhost")
-    notify_url = config.get("ALIPAY_NOTIFY_URL")
+    # Keep the legacy variable working while new deployments use a neutral name.
+    notify_url = config.get("BYPAY_NOTIFY_URL")
     if notify_url is None:
-        notify_url = "" if local or parsed.scheme != "https" else origin + "/alipay/notify"
+        notify_url = config.get("ALIPAY_NOTIFY_URL")
+    if notify_url is None:
+        notify_url = "" if local or parsed.scheme != "https" else origin + "/payments/notify"
     if notify_url:
         notification = urlsplit(notify_url)
-        if notification.scheme != "https" or not notification.hostname or notification.hostname in {"localhost", "127.0.0.1", "::1"} or notification.username or notification.password or notification.query or notification.fragment or notification.path != "/alipay/notify":
-            raise ValueError("ALIPAY_NOTIFY_URL 必须是指向本服务的公网 HTTPS 地址，路径为 /alipay/notify")
+        # Normalize the former route so upgrades keep accepting existing environment files.
+        if notification.path == "/alipay/notify":
+            notify_url = notification._replace(path="/payments/notify").geturl()
+            notification = urlsplit(notify_url)
+        if notification.scheme != "https" or not notification.hostname or notification.hostname in {"localhost", "127.0.0.1", "::1"} or notification.username or notification.password or notification.query or notification.fragment or notification.path != "/payments/notify":
+            raise ValueError("ALIPAY_NOTIFY_URL 必须是指向本服务的公网 HTTPS 地址，路径为 /payments/notify")
     return {"env": env, "app_id": config.get("ALIPAY_APP_ID", ""),
             "seller_id": config.get("ALIPAY_SELLER_ID", ""),
             "app_private_key": key("ALIPAY_PRIVATE_KEY"),
             "alipay_public_key": key("ALIPAY_PUBLIC_KEY"),
             "gateway": GATEWAY_BY_ENV[env], "sign_type": "RSA2", "charset": "utf-8",
-            "notify_url": notify_url, "return_url": origin + "/alipay/return"}
+            "notify_url": notify_url, "return_url": origin + "/payment/return"}
 
 
 def create_app(settings=None):
@@ -149,6 +156,31 @@ def create_app(settings=None):
 
     alipay_factory = lambda active: app.config.get("ALIPAY_CLIENT_FACTORY", AlipayClient)(active)
     wechat_factory = lambda active: app.config.get("WECHAT_CLIENT_FACTORY", WechatClient)(active)
+
+    def close_provider_order(order):
+        try:
+            active = channels.payment_config(order)
+            if order["channel"] == "alipay":
+                if not ready(active): raise ApiError("payment_not_configured", 503)
+                answer = alipay_factory(active).close(out_trade_no=order["out_trade_no"], trade_no=order.get("trade_no") or "")
+                return {"is_success": answer.get("is_success") is True, "out_trade_no": order["out_trade_no"],
+                        "provider_state": "TRADE_CLOSED" if answer.get("is_success") is True else str(answer.get("sub_code") or answer.get("code") or "")[:64]}
+            if order["channel"] == "wechat":
+                if not wechat_ready(active): raise ApiError("payment_not_configured", 503)
+                answer = wechat_factory(active).close(order["out_trade_no"])
+                if answer.get("out_trade_no") != order["out_trade_no"]:
+                    raise ApiError("payment_mismatch", 502)
+                return {"is_success": answer.get("is_success") is True and answer.get("trade_state") == "CLOSED",
+                        "out_trade_no": order["out_trade_no"], "provider_state": str(answer.get("trade_state") or "")[:64]}
+            raise ApiError("channel_not_integrated")
+        except ApiError:
+            raise
+        except WechatError as exc:
+            raise ApiError(exc.code, 502) from None
+        except (AlipayError, ChannelError):
+            raise ApiError("payment_provider_error", 502) from None
+
+    app.extensions["merchant_close_provider"] = close_provider_order
     reconciler = Reconciler(store, channels, trace, alipay_factory, wechat_factory)
     app.extensions["reconciler"] = reconciler
     refunds = Refunds(store, channels, trace, alipay_factory, wechat_factory)
@@ -225,7 +257,7 @@ def create_app(settings=None):
             response.headers.pop('X-Frame-Options', None)
             response.headers['Content-Security-Policy'] = response.headers['Content-Security-Policy'].replace("frame-ancestors 'none'", "frame-ancestors 'self' " + g.cashier_parent)
             response.headers['Cache-Control'] = 'no-store'
-        if request.path.startswith(("/api/", "/alipay/", "/wechat/", "/m/")) or request.path.endswith('.php'):
+        if request.path.startswith(("/api/", "/payments/", "/payment/", "/alipay/", "/wechat/", "/m/")) or request.path.endswith('.php'):
             response.headers["Cache-Control"] = "no-store"
         if secure:
             response.headers["Strict-Transport-Security"] = "max-age=31536000"
@@ -583,6 +615,12 @@ def create_app(settings=None):
             raise ApiError("invalid_amount")
         if Decimal(amount) > Decimal(store.setting("max_amount", money(app.config["TEST_MAX_AMOUNT"]))):
             raise ApiError("test_amount_exceeded")
+        merchant_settings = None
+        if not internal:
+            saved_settings = merchants.payment_settings(g.user["id"])
+            merchant_settings = saved_settings["settings"]
+            if Decimal(amount) < Decimal(merchant_settings["minimum_amount"]): raise ApiError("merchant_amount_below_minimum")
+            if Decimal(amount) > Decimal(merchant_settings["maximum_amount"]): raise ApiError("merchant_amount_above_maximum")
         payload = {"out_trade_no": number, "subject": subject.strip(), "amount": amount, "product": payload.get("product", "page"), "notify_url": notify_url}
         if channel != "alipay": payload["channel"] = channel  # Alipay requests keep their original hash, so old orders still replay
         request_hash = digest(json.dumps({**payload, **buyer}, sort_keys=True, separators=(",", ":")))
@@ -603,86 +641,105 @@ def create_app(settings=None):
             try:operations.precheck(g.user['id'],payload['subject'],payload['amount'],notify_url,number,client_ip,admin=g.user['role']=='admin')
             except ValueError as exc:raise ApiError(str(exc),403) from None
         if not existing and channel == "alipay" and not store.setting("alipay_enabled", True):
+            if not existing and merchant_settings:
+                with store.connect() as db: db.execute('DELETE FROM merchant_quota_reservations WHERE number=?',(number,))
             raise ApiError("channel_disabled", 403)
         policy = site.read()
+        if merchant_settings:
+            timeout_minutes=int(merchant_settings["timeout_minutes"]) if saved_settings["version"] else policy["order_timeout_minutes"]
+            if timeout_minutes>policy["order_timeout_minutes"]: raise ApiError("invalid_merchant_payment_settings")
+            config_id=merchants.select_config(g.user["id"],channel,channels,config_id)
         order_cfg = channels.payment_config(existing) if existing else channels.pin(channels.payment_config(config_id=config_id, channel=channel))
+        if merchant_settings:
+            if saved_settings["version"]:
+                order_cfg["merchant_fee_rate"]=merchant_settings["fee_rate"]
+            order_cfg["merchant_settings_version"]=saved_settings["version"]
         if not existing and not order_cfg["config_enabled"]: raise ApiError("channel_disabled", 403)
-        expires_at = existing["expires_at"] if existing else int(time.time()) + policy["order_timeout_minutes"] * 60
+        timeout_minutes=(timeout_minutes if merchant_settings else policy["order_timeout_minutes"])
+        expires_at = existing["expires_at"] if existing else int(time.time()) + timeout_minutes * 60
         if expires_at <= int(time.time()): raise ApiError("payment_order_expired", 409)
-        if channel == "wechat":
-            return create_wechat(payload, buyer, order_cfg, existing, request_hash, expires_at, replay, matching, was_existing)
-        order_cfg.update(expires_at=expires_at, timeout_express=f"{policy['order_timeout_minutes']}m",
-                         time_expire=datetime.fromtimestamp(expires_at, ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S"))
-        return_token = secrets.token_urlsafe(32) if payload["product"] in {"page", "wap"} else None
-        # Keep the browser on the same allowed hostname so its login cookie survives.
-        # A forwarded or arbitrary Host header never controls a payment URL.
-        browser_origin = request.headers.get("Origin", origin)
-        if app.config.get("BYPAY_RUN_MODE") == "local" and browser_origin in browser_origins and order_cfg["return_url"] == base_cfg["return_url"]:
-            order_cfg["return_url"] = browser_origin + "/alipay/return"
-        return_base = order_cfg["return_url"]
-        if return_token: order_cfg["return_url"] += "?" + urlencode({"state": return_token})
-        pay_client = client(order_cfg)
-        trace("create.received", "request_validated", payload, number, g.user["id"])
-        if payload["product"] == "mini":
-            if not existing:
-                try:
-                    existing = store.create_order(g.user["id"], payload, "", order_cfg, request_hash=request_hash, client_ip=client_ip)
-                except sqlite3.IntegrityError:
-                    existing = store.order(number)
-                    matching(existing)
-                trace("create.saved", "order_saved", {"status": existing["status"], "amount": amount}, number, g.user["id"])
-            lease = store.claim_checkout(number)
-            if not lease:
-                current = store.order(number)
-                if json.loads(current["payment_payload"]): return replay(current)
-                raise ApiError("payment_creation_pending", 409)
-            try:
-                method = "alipay.trade.create"
-                trace("sdk.create", "provider_creation_requested", {"method": method}, number, g.user["id"])
-                result = pay_client.create_mini_trade(number, amount, payload["subject"], buyer=buyer)
-                trace("sdk.response", "sdk_response_received", result.get("sdk_response", {}), number, g.user["id"], accepted=result.get("is_success", False))
-                if not result.get("is_success"):
-                    raise ApiError("payment_product_unavailable" if result.get("sub_code") in {"isv.insufficient-isv-permissions", "ACQ.ACCESS_FORBIDDEN", "ACQ.PRODUCT_NOT_SUPPORT"} else "payment_provider_error", 502)
-                if result.get("out_trade_no") != number: raise ApiError("payment_mismatch", 502)
-                if any(result.get(key) and result[key] != order_cfg[key] for key in ("app_id", "seller_id")):
-                    raise ApiError("payment_mismatch", 502)
-                if result.get("total_amount"):
+        if not existing and merchant_settings:
+            try: merchants.reserve_quota(g.user["id"],number,amount,merchant_settings)
+            except ValueError as exc: raise ApiError(str(exc),403) from None
+        try:
+            if channel == "wechat":
+                return create_wechat(payload, buyer, order_cfg, existing, request_hash, expires_at, replay, matching, was_existing)
+            order_cfg.update(expires_at=expires_at, timeout_express=f"{timeout_minutes}m",
+                             time_expire=datetime.fromtimestamp(expires_at, ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S"))
+            return_token = secrets.token_urlsafe(32) if payload["product"] in {"page", "wap"} else None
+            # Keep the browser on the same allowed hostname so its login cookie survives.
+            # A forwarded or arbitrary Host header never controls a payment URL.
+            browser_origin = request.headers.get("Origin", origin)
+            if app.config.get("BYPAY_RUN_MODE") == "local" and browser_origin in browser_origins and order_cfg["return_url"] == base_cfg["return_url"]:
+                order_cfg["return_url"] = browser_origin + "/payment/return"
+            return_base = order_cfg["return_url"]
+            if return_token: order_cfg["return_url"] += "?" + urlencode({"state": return_token})
+            pay_client = client(order_cfg)
+            trace("create.received", "request_validated", payload, number, g.user["id"])
+            if payload["product"] == "mini":
+                if not existing:
                     try:
-                        if money(result["total_amount"]) != amount: raise ValueError()
-                    except ValueError:
-                        raise ApiError("payment_mismatch", 502) from None
-                trade_no = result.get("trade_no")
-                if not isinstance(trade_no, str) or not re.fullmatch(r"[A-Za-z0-9_-]{6,64}", trade_no): raise ApiError("payment_mismatch", 502)
-                payment = {"kind": "mini", "trade_no": trade_no}
-                store.finish_checkout(number, lease, payment, trade_no)
-                trace("sdk.ready", "checkout_ready", {"kind": payment["kind"]}, number, g.user["id"])
-            finally:
-                store.finish_checkout(number, lease)
-            return jsonify(order=public_order(store.order(number))), 200 if was_existing else 201
-        if payload["product"] == "app":
-            payment = {"kind": "app", "order_string": pay_client.create_app_pay_string(number, amount, payload["subject"])}
+                        existing = store.create_order(g.user["id"], payload, "", order_cfg, request_hash=request_hash, client_ip=client_ip)
+                    except sqlite3.IntegrityError:
+                        existing = store.order(number)
+                        matching(existing)
+                    trace("create.saved", "order_saved", {"status": existing["status"], "amount": amount}, number, g.user["id"])
+                lease = store.claim_checkout(number)
+                if not lease:
+                    current = store.order(number)
+                    if json.loads(current["payment_payload"]): return replay(current)
+                    raise ApiError("payment_creation_pending", 409)
+                try:
+                    method = "alipay.trade.create"
+                    trace("sdk.create", "provider_creation_requested", {"method": method}, number, g.user["id"])
+                    result = pay_client.create_mini_trade(number, amount, payload["subject"], buyer=buyer)
+                    trace("sdk.response", "sdk_response_received", result.get("sdk_response", {}), number, g.user["id"], accepted=result.get("is_success", False))
+                    if not result.get("is_success"):
+                        raise ApiError("payment_product_unavailable" if result.get("sub_code") in {"isv.insufficient-isv-permissions", "ACQ.ACCESS_FORBIDDEN", "ACQ.PRODUCT_NOT_SUPPORT"} else "payment_provider_error", 502)
+                    if result.get("out_trade_no") != number: raise ApiError("payment_mismatch", 502)
+                    if any(result.get(key) and result[key] != order_cfg[key] for key in ("app_id", "seller_id")):
+                        raise ApiError("payment_mismatch", 502)
+                    if result.get("total_amount"):
+                        try:
+                            if money(result["total_amount"]) != amount: raise ValueError()
+                        except ValueError:
+                            raise ApiError("payment_mismatch", 502) from None
+                    trade_no = result.get("trade_no")
+                    if not isinstance(trade_no, str) or not re.fullmatch(r"[A-Za-z0-9_-]{6,64}", trade_no): raise ApiError("payment_mismatch", 502)
+                    payment = {"kind": "mini", "trade_no": trade_no}
+                    store.finish_checkout(number, lease, payment, trade_no)
+                    trace("sdk.ready", "checkout_ready", {"kind": payment["kind"]}, number, g.user["id"])
+                finally:
+                    store.finish_checkout(number, lease)
+                return jsonify(order=public_order(store.order(number))), 200 if was_existing else 201
+            if payload["product"] == "app":
+                payment = {"kind": "app", "order_string": pay_client.create_app_pay_string(number, amount, payload["subject"])}
+                try:
+                    order = store.create_order(g.user["id"], payload, "", order_cfg, payment_payload=payment, request_hash=request_hash, client_ip=client_ip)
+                except sqlite3.IntegrityError:
+                    return replay(store.order(number))
+                trace("sdk.link", "app_order_signed", {"method": "alipay.trade.app.pay", "expires_at": expires_at}, number, g.user["id"])
+                trace("create.saved", "order_saved", {"status": order["status"], "amount": amount}, number, g.user["id"])
+                return jsonify(order=public_order(order)), 201
+            fn = pay_client.create_wap_pay_url if payload["product"] == "wap" else pay_client.create_page_pay_url
+            pay_url = fn(number, amount, payload["subject"])
+            parsed_url = urlsplit(pay_url)
+            query = parse_qs(parsed_url.query)
+            trace("sdk.link", "checkout_url_signed", {"method": "alipay.trade." + payload["product"] + ".pay",
+                  "response_type": "URL string", "gateway": parsed_url.scheme + "://" + parsed_url.netloc + parsed_url.path,
+                  "parameter_names": sorted(query), "notify_url": order_cfg["notify_url"], "return_url": return_base,
+                  "note": "此刻仅本地签名；随后由后台预取，或用户打开收银台时，才会向支付宝请求二维码，支付宝才可能创建交易。"}, number, g.user["id"])
             try:
-                order = store.create_order(g.user["id"], payload, "", order_cfg, payment_payload=payment, request_hash=request_hash, client_ip=client_ip)
+                order = store.create_order(g.user["id"], payload, pay_url, order_cfg, return_token, {"kind": "url", "url": pay_url}, request_hash, client_ip=client_ip)
             except sqlite3.IntegrityError:
                 return replay(store.order(number))
-            trace("sdk.link", "app_order_signed", {"method": "alipay.trade.app.pay", "expires_at": expires_at}, number, g.user["id"])
             trace("create.saved", "order_saved", {"status": order["status"], "amount": amount}, number, g.user["id"])
+            if payload["product"] == "page": app.extensions["qr_prefetch"].submit(prefetch_qr, number)  # Alipay is asked for the QR while the cashier is still loading
             return jsonify(order=public_order(order)), 201
-        fn = pay_client.create_wap_pay_url if payload["product"] == "wap" else pay_client.create_page_pay_url
-        pay_url = fn(number, amount, payload["subject"])
-        parsed_url = urlsplit(pay_url)
-        query = parse_qs(parsed_url.query)
-        trace("sdk.link", "checkout_url_signed", {"method": "alipay.trade." + payload["product"] + ".pay",
-              "response_type": "URL string", "gateway": parsed_url.scheme + "://" + parsed_url.netloc + parsed_url.path,
-              "parameter_names": sorted(query), "notify_url": order_cfg["notify_url"], "return_url": return_base,
-              "note": "此刻仅本地签名；随后由后台预取，或用户打开收银台时，才会向支付宝请求二维码，支付宝才可能创建交易。"}, number, g.user["id"])
-        try:
-            order = store.create_order(g.user["id"], payload, pay_url, order_cfg, return_token, {"kind": "url", "url": pay_url}, request_hash, client_ip=client_ip)
-        except sqlite3.IntegrityError:
-            return replay(store.order(number))
-        trace("create.saved", "order_saved", {"status": order["status"], "amount": amount}, number, g.user["id"])
-        if payload["product"] == "page": app.extensions["qr_prefetch"].submit(prefetch_qr, number)  # Alipay is asked for the QR while the cashier is still loading
-        return jsonify(order=public_order(order)), 201
+        except Exception:
+            if not existing and merchant_settings:
+                merchants.consume_quota(number, g.user["id"])
+            raise
 
     @app.post("/api/v1/payments/<number>/sync")
     @auth()
@@ -719,7 +776,7 @@ def create_app(settings=None):
         base = site.read()["origin"]
         if not base.startswith("https://"):
             raise ApiError("wechat_https_required", 409)  # WeChat requires a public HTTPS notify_url on every order
-        order_cfg.update(notify_url=f"{base}/wechat/notify/{number}", return_url=f"{base}/wechat/return" if product == "wap" else "", expires_at=expires_at)
+        order_cfg.update(notify_url=f"{base}/payments/notify/{number}", return_url=f"{base}/payment/return" if product == "wap" else "", expires_at=expires_at)
         wx = wechat_client(order_cfg)
         trace("create.received", "request_validated", payload, number, g.user["id"])
         if not existing:
@@ -774,10 +831,11 @@ def create_app(settings=None):
                 link = None
             with store.connect() as db: db.execute("UPDATE orders SET payment_payload=? WHERE out_trade_no=?", (json.dumps(payload), order["out_trade_no"]))
             if link is None: return None
-        redirect = f"{site.read()['origin']}/wechat/return?state={payload['return_token']}"
+        redirect = f"{site.read()['origin']}/payment/return?state={payload['return_token']}"
         return f"{link}&redirect_url={quote(redirect, safe='')}"
 
-    @app.post("/wechat/notify/<number>")
+    @app.post("/payments/notify/<number>")
+    @app.post("/wechat/notify/<number>")  # legacy route for in-flight orders
     def wechat_notify(number):
         """WeChat Pay payment notice: verify with the public key, decrypt with the APIv3 key, then apply only a matching, paid order."""
         known = re.fullmatch(r"[A-Za-z0-9_|*-]{6,32}", number) is not None
@@ -815,7 +873,8 @@ def create_app(settings=None):
               "trade_no": paid.get("transaction_id", ""), "reply": "204"}, number, order["user_id"])
         return "", 204
 
-    @app.post("/alipay/notify")
+    @app.post("/payments/notify")
+    @app.post("/alipay/notify")  # legacy route for configured providers
     def notify():
         if request.mimetype != "application/x-www-form-urlencoded" or request.args:
             return "failure", 400, {"Content-Type": "text/plain; charset=utf-8"}
@@ -840,7 +899,8 @@ def create_app(settings=None):
               "reply": "success"}, order["out_trade_no"], order["user_id"])
         return "success", 200, {"Content-Type": "text/plain; charset=utf-8"}
 
-    @app.get("/alipay/return")
+    @app.get("/payment/return")
+    @app.get("/alipay/return")  # legacy browser-return routes
     @app.get("/wechat/return")
     def payment_return():
         # Return parameters can locate a receipt but NEVER confirm payment.
@@ -941,7 +1001,7 @@ def create_app(settings=None):
     @app.get("/", defaults={"path": ""})
     @app.get("/<path:path>")
     def frontend(path):
-        if path.startswith(("api/", "alipay/", "wechat/")) or path.startswith("."):
+        if path.startswith(("api/", "payments/", "payment/", "alipay/", "wechat/")) or path.startswith("."):
             raise ApiError("not_found", 404)
         dist = Path(app.config["FRONTEND_DIST"]).resolve()
         candidate = (dist / path).resolve()
@@ -964,7 +1024,7 @@ def create_app(settings=None):
         return send_from_directory(dist, "index.html")
 
     from .epay import install_epay
-    install_epay(app, merchants, auth, trace, create_payment_request, prepare_qr_request, ApiError)
+    install_epay(app, merchants, auth, trace, create_payment_request, prepare_qr_request, ApiError, close_provider_order)
     from .platform_api import install_platform
     install_platform(app,auth,create_payment_request,ApiError,same_origin)
     install_console(app, store, auth, trace, cfg, ready, ApiError)

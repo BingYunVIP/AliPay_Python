@@ -1,5 +1,6 @@
 import base64
 import json
+import re
 import time
 import tempfile
 import unittest
@@ -150,6 +151,63 @@ class WechatClientTests(unittest.TestCase):
         missing = self.client.query("NOSUCHORDER1")
         self.assertEqual((missing["is_success"], missing["sub_code"]), (False, "ORDER_NOT_EXIST"))
 
+    # ---------------------------------------------------------------- close
+    def test_close_uses_signed_endpoint_and_returns_closed(self):
+        self.create()
+        result = self.client.close("ORDER000001")
+        self.assertEqual(result, {"is_success": True, "out_trade_no": "ORDER000001", "trade_state": "CLOSED"})
+        method, target, body = self.fake.calls[-1]
+        self.assertEqual((method, target, json.loads(body)), ("POST", "/v3/pay/transactions/out-trade-no/ORDER000001/close", {"mchid": self.fake.mch_id}))
+        self.assertEqual(self.fake.orders["ORDER000001"]["state"], "CLOSED")
+        authorization = self.fake.request_authorizations[-1]
+        match = re.fullmatch(r'WECHATPAY2-SHA256-RSA2048 mchid="(?P<mchid>[^"]+)",nonce_str="(?P<nonce>[^"]+)",signature="(?P<signature>[^"]+)",timestamp="(?P<timestamp>[^"]+)",serial_no="(?P<serial>[^"]+)"', authorization)
+        self.assertIsNotNone(match)
+        self.assertEqual((match["mchid"], match["serial"]), (self.fake.mch_id, self.fake.serial))
+        signed = f"{method}\n{target}\n{match['timestamp']}\n{match['nonce']}\n{body}\n"
+        self.fake.merchant_key.public_key().verify(base64.b64decode(match["signature"]), signed.encode(), padding.PKCS1v15(), hashes.SHA256())
+
+    def test_close_refuses_a_paid_order(self):
+        self.create()
+        self.fake.pay("ORDER000001")
+        with self.assertRaises(WechatError) as caught:
+            self.client.close("ORDER000001")
+        self.assertEqual((caught.exception.code, caught.exception.provider_code), ("wechat_order_paid", "ORDER_PAID"))
+        self.assertEqual(self.fake.orders["ORDER000001"]["state"], "SUCCESS")
+
+    def test_close_accepts_a_signed_already_closed_answer_idempotently(self):
+        self.create()
+        self.assertEqual(self.client.close("ORDER000001")["trade_state"], "CLOSED")
+        self.assertEqual(self.client.close("ORDER000001"), {"is_success": True, "out_trade_no": "ORDER000001", "trade_state": "CLOSED"})
+        self.assertEqual(self.fake.orders["ORDER000001"]["state"], "CLOSED")
+
+    def test_close_rejects_an_invalid_success_signature(self):
+        self.create()
+        original = self.fake._reply
+
+        def tamper(status, data=None):
+            response = original(status, data)
+            if status == 204:
+                headers = {**response.headers, "Wechatpay-Signature": response.headers["Wechatpay-Signature"] + "tampered"}
+                return httpx.Response(status, content=response.content, headers=headers)
+            return response
+
+        with patch.object(self.fake, "_reply", tamper), self.assertRaises(WechatError) as caught:
+            self.client.close("ORDER000001")
+        self.assertEqual(caught.exception.code, "wechat_response_signature_invalid")
+
+    def test_close_requires_an_empty_http_204_answer(self):
+        self.create()
+        original = self.fake._reply
+
+        def wrong_status(status, data=None):
+            response = original(status, data)
+            if status == 204:
+                return httpx.Response(200, content=response.content, headers=response.headers)
+            return response
+
+        with patch.object(self.fake, "_reply", wrong_status), self.assertRaises(WechatError) as caught:
+            self.client.close("ORDER000001")
+        self.assertEqual((caught.exception.code, caught.exception.status), ("wechat_system_error", 200))
     def test_refund_states_and_query(self):
         self.create(cents=500)
         self.fake.pay("ORDER000001")

@@ -51,7 +51,7 @@ class PlatformTests(unittest.TestCase):
     def paid(self,order):
         params={'out_trade_no':order['out_trade_no'],'total_amount':order['amount'],'trade_status':'TRADE_SUCCESS','trade_no':'20261016'+hashlib.sha256(order['out_trade_no'].encode()).hexdigest()[:18],'app_id':'2026000000000000','seller_id':'2088000000000000','sign_type':'RSA2'}
         params['sign']=base64.b64encode(self.private.sign(AlipayClient.build_sign_content(params).encode(),padding.PKCS1v15(),hashes.SHA256())).decode()
-        response=self.app.test_client().post('/alipay/notify',data=params);self.assertEqual(response.data,b'success',response.data)
+        response=self.app.test_client().post('/payments/notify',data=params);self.assertEqual(response.data,b'success',response.data)
 
     def balances(self,user=None):return self.ops.account(user or self.user)['balances']
     def balanced(self):

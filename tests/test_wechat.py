@@ -68,7 +68,7 @@ class WechatCase(unittest.TestCase):
 
     def notice(self, number, **kw):
         headers, body = self.fake.notification(number, **kw)
-        return self.client.post(f"/wechat/notify/{number}", data=body, headers=headers)
+        return self.client.post(f"/payments/notify/{number}", data=body, headers=headers)
 
 
 class WechatCreationTests(WechatCase):
@@ -80,7 +80,7 @@ class WechatCreationTests(WechatCase):
         self.assertRegex(order["cashier_qr"], r"^weixin://wxpay/bizpayurl\?pr=")
         self.assertEqual(order["payment_payload"]["code_url"], order["cashier_qr"])
         sent = json.loads(self.fake.calls[0][2])
-        self.assertEqual((sent["out_trade_no"], sent["amount"]["total"], sent["notify_url"]), (order["out_trade_no"], 1, f"https://pay.example.test/wechat/notify/{order['out_trade_no']}"))
+        self.assertEqual((sent["out_trade_no"], sent["amount"]["total"], sent["notify_url"]), (order["out_trade_no"], 1, f"https://pay.example.test/payments/notify/{order['out_trade_no']}"))
         self.assertRegex(sent["time_expire"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+08:00$")
         stored = self.store.order(order["out_trade_no"])
         self.assertEqual((stored["app_id"], stored["seller_id"], stored["channel"]), (self.fake.app_id, self.fake.mch_id, "wechat"))
@@ -157,7 +157,7 @@ class WechatH5Tests(WechatCase):
         target = urlsplit(phone.headers["Location"])
         self.assertEqual((target.hostname, target.path), ("wx.tenpay.com", "/cgi-bin/mmpayweb-bin/checkmweb"))
         redirect = parse_qs(target.query)["redirect_url"][0]
-        self.assertRegex(redirect, r"^https://pay\.example\.test/wechat/return\?state=[A-Za-z0-9_-]{43}$")
+        self.assertRegex(redirect, r"^https://pay\.example\.test/payment/return\?state=[A-Za-z0-9_-]{43}$")
         self.assertEqual(len(self.fake.calls), 1)  # a fresh link is used as it is
         # the link only lives five minutes: a stale one is renewed with the order's original parameters
         stored = self.order(number)
@@ -189,7 +189,7 @@ class WechatH5Tests(WechatCase):
     def test_the_return_page_does_not_treat_a_wechat_order_like_an_alipay_one(self):
         order = self.create(product="wap").json["order"]
         number = order["out_trade_no"]
-        legacy = self.app.test_client().get("/wechat/return", query_string={"out_trade_no": number, "app_id": self.order(number)["app_id"]})
+        legacy = self.app.test_client().get("/payment/return", query_string={"out_trade_no": number, "app_id": self.order(number)["app_id"]})
         self.assertEqual((legacy.status_code, legacy.headers["Location"]), (303, "/payment-return"))  # no receipt, no error, nothing to learn
 
     def test_a_link_that_keeps_failing_to_renew_does_not_hammer_wechat_pay(self):
@@ -220,6 +220,13 @@ class WechatNoticeTests(WechatCase):
     def setUp(self):
         super().setUp()
         self.number_paid = self.create(notify_url="https://merchant.example/notify").json["order"]["out_trade_no"]
+
+    def test_legacy_wechat_notify_route_remains_compatible(self):
+        self.fake.pay(self.number_paid)
+        headers, body = self.fake.notification(self.number_paid)
+        response = self.client.post(f'/wechat/notify/{self.number_paid}', data=body, headers=headers)
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(self.order(self.number_paid)['status'], 'PAID')
 
     def test_valid_notice_marks_the_order_paid_once_and_queues_one_merchant_callback(self):
         self.assertEqual(self.order(self.number_paid)["status"], "CREATED")
@@ -252,7 +259,7 @@ class WechatNoticeTests(WechatCase):
             "foreign currency": self.fake.notification(self.number_paid, amount={"total": 1, "payer_total": 1, "currency": "USD", "payer_currency": "USD"}),
         }
         for label, (h, b) in cases.items():
-            response = self.client.post(f"/wechat/notify/{self.number_paid}", data=b, headers=h)
+            response = self.client.post(f"/payments/notify/{self.number_paid}", data=b, headers=h)
             self.assertEqual(response.status_code, 400, label)
             self.assertEqual(response.json["code"], "FAIL", label)
             self.assertEqual(self.order(self.number_paid)["status"], "CREATED", label)
@@ -260,13 +267,13 @@ class WechatNoticeTests(WechatCase):
 
     def test_unknown_orders_and_orders_of_other_channels_are_refused_and_other_events_are_ignored(self):
         headers, body = self.fake.notification(self.number_paid)
-        unknown = self.client.post("/wechat/notify/NO_SUCH_ORDER_1", data=body, headers=headers)
-        forged = self.client.post(f"/wechat/notify/{self.number_paid}", data=body, headers={**headers, "Wechatpay-Signature": "AAAA"})
+        unknown = self.client.post("/payments/notify/NO_SUCH_ORDER_1", data=body, headers=headers)
+        forged = self.client.post(f"/payments/notify/{self.number_paid}", data=body, headers={**headers, "Wechatpay-Signature": "AAAA"})
         # an unknown order is refused exactly like a bad signature, so the endpoint cannot be used to look orders up
         self.assertEqual((unknown.status_code, unknown.json), (forged.status_code, forged.json))
         self.assertEqual(unknown.status_code, 400)
         with self.store.connect() as db: db.execute("UPDATE orders SET channel='alipay' WHERE out_trade_no=?", (self.number_paid,))
-        self.assertEqual(self.client.post(f"/wechat/notify/{self.number_paid}", data=body, headers=headers).status_code, 400)
+        self.assertEqual(self.client.post(f"/payments/notify/{self.number_paid}", data=body, headers=headers).status_code, 400)
         with self.store.connect() as db: db.execute("UPDATE orders SET channel='wechat' WHERE out_trade_no=?", (self.number_paid,))
         self.fake.pay(self.number_paid)
         self.assertEqual(self.notice(self.number_paid, event_type="REFUND.SUCCESS").status_code, 204)
@@ -274,20 +281,20 @@ class WechatNoticeTests(WechatCase):
 
     def test_junk_posts_are_rate_limited_and_leave_only_a_few_log_lines(self):
         junk = {"Wechatpay-Serial": self.fake.public_key_id, "Wechatpay-Timestamp": str(int(time.time())), "Wechatpay-Nonce": "n", "Wechatpay-Signature": "AAAA"}
-        statuses = [self.client.post(f"/wechat/notify/{self.number_paid}", data=b"{}", headers=junk).status_code for _ in range(40)]
+        statuses = [self.client.post(f"/payments/notify/{self.number_paid}", data=b"{}", headers=junk).status_code for _ in range(40)]
         self.assertEqual((statuses[:30], set(statuses[30:])), ([400] * 30, {429}))  # 30 a minute per order, then WeChat Pay would simply retry later
         rejected = [event for event in self.admin.get("/api/admin/events").json["events"] if event["stage"] == "notify.rejected"]
         self.assertLessEqual(len(rejected), 3)
         self.assertEqual(self.order(self.number_paid)["status"], "CREATED")
         # numbers that cannot be orders share one bucket instead of creating one counter each
-        for index in range(5): self.client.post(f"/wechat/notify/not%20an%20order%20{index}", data=b"{}", headers=junk)
+        for index in range(5): self.client.post(f"/payments/notify/not%20an%20order%20{index}", data=b"{}", headers=junk)
         with self.store.connect() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM limits WHERE key LIKE 'wechat-notify:%'").fetchone()[0], 2)
 
     def test_a_refused_notice_never_puts_its_own_text_into_the_log(self):
         headers, body = self.fake.notification(self.number_paid)
         weird = {**headers, "Wechatpay-Timestamp": "9" * 400}
-        self.assertEqual(self.client.post(f"/wechat/notify/{self.number_paid}", data=body, headers=weird).status_code, 400)
+        self.assertEqual(self.client.post(f"/payments/notify/{self.number_paid}", data=body, headers=weird).status_code, 400)
         reasons = {event["reason"] for event in self.admin.get("/api/admin/events").json["events"] if event["stage"] == "notify.rejected"}
         self.assertEqual(reasons, {"wechat_response_signature_invalid"})
 
@@ -295,7 +302,7 @@ class WechatNoticeTests(WechatCase):
         other = self.create().json["order"]["out_trade_no"]
         self.fake.pay(self.number_paid)
         headers, body = self.fake.notification(self.number_paid)
-        response = self.client.post(f"/wechat/notify/{other}", data=body, headers=headers)
+        response = self.client.post(f"/payments/notify/{other}", data=body, headers=headers)
         self.assertEqual(response.status_code, 400)
         self.assertEqual((self.order(other)["status"], self.order(self.number_paid)["status"]), ("CREATED", "CREATED"))
 
@@ -311,7 +318,7 @@ class WechatNoticeTests(WechatCase):
     def test_trace_records_a_rejection_without_secrets(self):
         self.fake.pay(self.number_paid)
         headers, body = self.fake.notification(self.number_paid, key="f" * 32)
-        self.client.post(f"/wechat/notify/{self.number_paid}", data=body, headers=headers)
+        self.client.post(f"/payments/notify/{self.number_paid}", data=body, headers=headers)
         log = json.dumps(self.admin.get("/api/admin/events").json)
         self.assertIn("wechat_notification_invalid", log)
         for secret in (self.fake.api_v3_key, "BEGIN PRIVATE KEY", headers["Wechatpay-Signature"]):

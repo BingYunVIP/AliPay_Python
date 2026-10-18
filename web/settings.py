@@ -55,7 +55,7 @@ class SiteSettings:
             "callback_hosts": sorted({h.strip() for h in config.get("BYPAY_CALLBACK_HOSTS", "test.bingyun.vip").split(",") if h.strip()}),
             "registration": config.get("ALLOW_REGISTRATION", "false") == "true",
             "email_domains": [part.strip().lower() for part in str(config.get("BYPAY_EMAIL_DOMAINS", "")).split(",") if part.strip()] or list(EMAIL_DOMAINS_DEFAULT),
-            "alipay_enabled": True,
+            "alipay_enabled": True, "cashier_ratio": "9:16", "cashier_width": 392,
             "max_amount": money(config.get("TEST_MAX_AMOUNT", "3000.00")), "version": 0}
         self.ceiling = self.defaults["max_amount"]
         self.allow_http = config.get("BYPAY_ALLOW_HTTP") == "1"
@@ -69,6 +69,14 @@ class SiteSettings:
             with self.store.connect() as connection:
                 return self.read(connection)
         saved = {row["key"]: json.loads(row["value"]) for row in db.execute("SELECT * FROM console_settings")}
+        # Migrate saved public URLs lazily; existing orders retain their pinned provider URLs.
+        for key, old_path, new_path in (("notify_url", "/alipay/notify", "/payments/notify"),
+                                        ("return_url", "/alipay/return", "/payment/return")):
+            value = saved.get(key)
+            if isinstance(value, str):
+                parsed = urlsplit(value)
+                if parsed.path == old_path:
+                    saved[key] = parsed._replace(path=new_path).geturl()
         # 旧版的“失败重试间隔”是一串秒数；现在只用一个固定间隔，取原来的第一个值
         if "callback_retry_interval_seconds" not in saved and isinstance(saved.get("callback_retry_delays"), list) and saved["callback_retry_delays"]:
             saved["callback_retry_interval_seconds"] = saved["callback_retry_delays"][0]
@@ -101,8 +109,17 @@ class SiteSettings:
             validate_origin(cfg["origin"], self.allow_http)
             if self.defaults["origin"].startswith("https://") and not cfg["origin"].startswith("https://"):
                 raise SettingsError(field="origin")
-            for key, path in (("notify_url", "/alipay/notify"), ("return_url", "/alipay/return")):
+            for key, old_path, path in (("notify_url", "/alipay/notify", "/payments/notify"),
+                                        ("return_url", "/alipay/return", "/payment/return")):
                 value = cfg[key]
+                if isinstance(value, str):
+                    try:
+                        previous = urlsplit(value)
+                    except ValueError:
+                        raise SettingsError(field=key) from None
+                    if previous.path == old_path:
+                        value = previous._replace(path=path).geturl()
+                        cfg[key] = value
                 if key == "notify_url" and value == "": continue
                 if not isinstance(value, str) or len(value) > 256: raise SettingsError(field=key)
                 try:
@@ -128,6 +145,10 @@ class SiteSettings:
                                 "query_window_minutes": (1, 4320), "callback_timeout_seconds": (2, 30),
                                 "callback_first_delay_seconds": (0, 3600), "callback_retry_interval_seconds": (5, 86400)}.items():
                 if type(cfg[key]) is not int or not bounds[0] <= cfg[key] <= bounds[1]: raise SettingsError(field=key)
+            if not isinstance(cfg["cashier_ratio"], str) or cfg["cashier_ratio"] not in {"9:16", "3:4", "1:1", "16:10"}:
+                raise SettingsError(field="cashier_ratio")
+            if type(cfg["cashier_width"]) is not int or not 320 <= cfg["cashier_width"] <= 1200:
+                raise SettingsError(field="cashier_width")
             if cfg["query_window_minutes"] < cfg["order_timeout_minutes"]:
                 raise SettingsError(field="query_window_minutes")
             domains = cfg["email_domains"]

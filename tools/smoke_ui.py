@@ -87,7 +87,7 @@ def run():
             params = {'out_trade_no': number, 'total_amount': order['amount'], 'trade_status': 'TRADE_SUCCESS', 'trade_no': '20261017' + hashlib.sha256(number.encode()).hexdigest()[:18],
                       'app_id': '2026000000000000', 'seller_id': '2088000000000000', 'sign_type': 'RSA2'}
             params['sign'] = base64.b64encode(key.sign(AlipayClient.build_sign_content(params).encode(), padding.PKCS1v15(), hashes.SHA256())).decode()
-            assert app.test_client().post('/alipay/notify', data=params).data == b'success'
+            assert app.test_client().post('/payments/notify', data=params).data == b'success'
 
         server = make_server('127.0.0.1', PORT, app, threaded=True, request_handler=Quiet)
         threading.Thread(target=server.serve_forever, daemon=True).start()
