@@ -13,7 +13,14 @@ python_command() {
   "$BYPAY_PROJECT_ROOT/.venv/bin/python" -m web.management "$@"
 }
 
-code_version() { git -C "$BYPAY_PROJECT_ROOT" --no-pager log -1 --date=short --format='%h · %cd' 2>/dev/null || echo 未知; }
+code_version() {
+  # A copied project beneath another checkout must not report the parent's version.
+  if [[ "$(git -C "$BYPAY_PROJECT_ROOT" rev-parse --show-toplevel 2>/dev/null)" != "$BYPAY_PROJECT_ROOT" ]]; then
+    echo 未知
+    return
+  fi
+  git -C "$BYPAY_PROJECT_ROOT" --no-pager log -1 --date=short --format='%h · %cd' 2>/dev/null || echo 未知
+}
 
 tool_status() {
   local tool executable version ready label
