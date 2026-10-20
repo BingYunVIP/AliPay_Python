@@ -5,9 +5,6 @@ from types import SimpleNamespace
 
 from web.app import ROOT, create_app
 
-TOKEN = "YIZThTeg958vnQzp"
-
-
 class VerificationFileTests(unittest.TestCase):
     """WeChat (and similar platforms) verify a domain by fetching a .txt file from the site root."""
 
@@ -69,14 +66,15 @@ class VerificationFileTests(unittest.TestCase):
         self.assertEqual(self.fetch(self.client, "/api/capabilities").status_code, 200)
         self.assertEqual(self.fetch(self.client, "/robots.txt").status_code, 404)  # not in the folder, so not invented
 
-    def test_the_file_shipped_for_the_wechat_js_safe_domain_is_in_the_repository(self):
-        shipped = ROOT / "verification" / f"MP_verify_{TOKEN}.txt"
-        self.assertEqual(shipped.read_bytes(), TOKEN.encode())  # byte for byte what WeChat issued: no newline, no BOM
+    def test_default_folder_and_missing_verification_file_are_safe(self):
+        # Site-specific verification proofs are deployed separately, never
+        # required in a clean source checkout or embedded in test code.
         app = create_app({"TESTING": True, "PUBLIC_BASE_URL": "https://pay.example.test", "DATABASE": str(self.root / "other.sqlite3"),
                           "BYPAY_ADMIN_EMAIL": "admin@example.test", "BYPAY_ADMIN_PASSWORD": "Admin-password-123"})
         self.assertEqual(Path(app.config["VERIFICATION_DIR"]), ROOT / "verification")  # the default folder, with no setting needed
-        response = self.fetch(app.test_client(), f"/MP_verify_{TOKEN}.txt")
-        self.assertEqual((response.status_code, response.data), (200, TOKEN.encode()))
+        app.config['VERIFICATION_DIR'] = str(self.root / 'not-deployed')
+        response = self.fetch(app.test_client(), '/MP_verify_AbCdEf123456.txt')
+        self.assertEqual(response.status_code, 404)
 
 
 if __name__ == "__main__":
