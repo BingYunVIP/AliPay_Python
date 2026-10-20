@@ -1,0 +1,1 @@
+<template><section class="auth-shell"><div class="auth-card panel"><h1>404</h1><p>页面不存在</p><RouterLink class="button" to="/">返回首页</RouterLink></div></section></template>

@@ -1,0 +1,5 @@
+Google Material Symbols font is distributed under the Apache License, Version 2.0.
+Copyright 2022 Google LLC.
+
+The font is subsetted for ByPay's UI. License text: https://www.apache.org/licenses/LICENSE-2.0
+Source: https://fonts.google.com/icons

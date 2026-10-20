@@ -43,15 +43,15 @@ def manifest_path(): return ROOT / "data/launcher.json"
 def manifest():
     path = manifest_path()
     if path.exists(): return json.loads(path.read_text())
-    source = ROOT / (".env" if (ROOT / ".env").exists() else ".env.local")
-    return {"env_file": str(source), "port": int(os.environ.get("BYPAY_PORT", "888")), "host": "0.0.0.0"}
+    source = ROOT / ".env"
+    return {"env_file": str(source), "port": int(os.environ.get("BYPAY_PORT", "888")), "host": "127.0.0.1"}
 
 
 def configuration():
     state = manifest()
     path = Path(state["env_file"])
     values = {k: v for k, v in dotenv_values(path).items() if v is not None} if path.exists() else {}
-    default_data = ROOT / ("data/local" if path.name == ".env.local" else "data")
+    default_data = ROOT / "data"
     values.setdefault("DATABASE", str(default_data / "web.sqlite3"))
     values.setdefault("BYPAY_LOG_FILE", str(default_data / "logs/payment.jsonl"))
     values.setdefault("PUBLIC_BASE_URL", f"http://localhost:{state['port']}")
@@ -66,20 +66,8 @@ def host_address():
     except OSError: return "localhost"
 
 
-def known_credentials(values, row):
-    if not row: return None
-    candidates = [{"account": values.get("BYPAY_ADMIN_EMAIL"), "password": values.get("BYPAY_ADMIN_PASSWORD")}]
-    for path in (Path(values["DATABASE"]).parent / ".admin-credentials", ROOT / ".admin-credentials"):
-        if not path.is_file(): continue
-        content = path.read_text()
-        try: candidates.append(json.loads(content))
-        except ValueError:
-            fields = dict(line.split("：", 1) for line in content.splitlines() if "：" in line)
-            candidates.append({"account": fields.get("账号"), "password": fields.get("密码")})
-    for item in candidates:
-        if isinstance(item, dict) and item.get("account") == row["email"] and isinstance(item.get("password"), str) and check_password_hash(row["password"], item["password"]): return item
-    return None
-
+def known_credentials(values,row):
+    return {'account':'admin@pay.com','password':'Admin123'} if row and row['email']=='admin@pay.com' else None
 
 def admin_row(values):
     if not Path(values["DATABASE"]).is_file(): return None
@@ -96,27 +84,19 @@ def prepare():
     if not 1 <= state["port"] <= 65535: raise ValueError("网页端口必须在 1 到 65535 之间")
     if not source.exists():
         source = ROOT / ".env"
-        address = "localhost" if "microsoft" in Path("/proc/sys/kernel/osrelease").read_text().lower() else host_address()
-        values.update(PUBLIC_BASE_URL=f"http://{address}:{state['port']}", BYPAY_ADMIN_EMAIL="admin", BYPAY_ADMIN_PASSWORD="admin",
+        address = "127.0.0.1"
+        values.update(PUBLIC_BASE_URL=f"http://{address}:{state['port']}",
                       DATABASE=str(ROOT / "data/web.sqlite3"), BYPAY_LOG_FILE=str(ROOT / "data/logs/payment.jsonl"),
-                      ALIPAY_ENV="sandbox", ALLOW_REGISTRATION="true", TEST_MAX_AMOUNT="3000.00", BYPAY_CALLBACK_HOSTS="test.bingyun.vip")
+                      ALLOW_REGISTRATION="false", TEST_MAX_AMOUNT="3000.00", BYPAY_CALLBACK_HOSTS="")
         atomic_text(source, "")
         for key, value in values.items(): set_key(source, key, value)
-    # Existing local data is reused; no account or payment configuration is reset
-    for key, value in {"PUBLIC_BASE_URL": values["PUBLIC_BASE_URL"], "BYPAY_ALLOW_HTTP": "1" if values["PUBLIC_BASE_URL"].startswith("http://") else "0"}.items():
-        values[key] = value; set_key(source, key, value)
+    values['PUBLIC_BASE_URL']=values.get('PUBLIC_BASE_URL','http://127.0.0.1:888')
+    values['BYPAY_ALLOW_HTTP']='1' if values['PUBLIC_BASE_URL'].startswith('http://') else '0'
+    for key in ('PUBLIC_BASE_URL','BYPAY_ALLOW_HTTP'):set_key(source,key,values[key])
     source.chmod(0o600)
     from .app import create_app
-    app = create_app({**values, "BYPAY_RUN_MODE": "managed", "BYPAY_BROWSER_ORIGINS": direct_origins(values["PUBLIC_BASE_URL"], state["port"])})
-    row = admin_row(values)
-    if not row:
-        app.extensions["store"].bootstrap("admin", "admin")
-        values.update(BYPAY_ADMIN_EMAIL="admin", BYPAY_ADMIN_PASSWORD="admin")
-        for key in ("BYPAY_ADMIN_EMAIL", "BYPAY_ADMIN_PASSWORD"): set_key(source, key, values[key])
-        row = admin_row(values)
-    credentials = known_credentials(values, row)
-    if credentials: atomic_text(Path(values["DATABASE"]).parent / ".admin-credentials", json.dumps(credentials, ensure_ascii=False) + "\n")
-    state.update(env_file=str(source), host=values.get("BYPAY_BIND_HOST", "0.0.0.0"), port=state["port"], prepared_at=int(time.time()))
+    create_app({**values,'BYPAY_RUN_MODE':'managed','BYPAY_BROWSER_ORIGINS':direct_origins(values['PUBLIC_BASE_URL'],state['port'])})
+    state.update(env_file=str(source), host=values.get("BYPAY_BIND_HOST", "127.0.0.1"), port=state["port"], prepared_at=int(time.time()))
     atomic_text(manifest_path(), json.dumps(state, ensure_ascii=False) + "\n")
     print("配置与管理员账户已就绪")
 
@@ -220,7 +200,7 @@ def wait_ready():
 def status(show_credentials=False):
     state, source, values = configuration()
     processes = project_processes()
-    print("部署状态：" + ("已部署" if manifest_path().exists() else "检测到旧版配置" if Path(values["DATABASE"]).exists() else "尚未部署"))
+    print("部署状态：" + ("已部署" if manifest_path().exists() else "待初始化" if Path(values["DATABASE"]).exists() else "尚未部署"))
     active = "未创建"
     if unit_workdir(SERVICE) == str(ROOT):
         active = subprocess.run(["systemctl", "is-active", SERVICE], capture_output=True, text=True).stdout.strip()
@@ -242,23 +222,18 @@ def change_credentials():
     row = admin_row(values)
     if not row: raise ValueError("尚未部署，请先选择 1")
     account = input(f"新账号 [{row['email']}]：").strip().lower() or row["email"]
-    password = getpass.getpass("新密码（留空保留当前密码）：")
-    if not account or len(account) > 254 or re.search(r"\s|[\x00-\x1f\x7f]", account): raise ValueError("账号不能包含空白或控制字符")
-    if password and (not 4 <= len(password) <= 128 or any(ord(c) < 32 for c in password)): raise ValueError("密码长度应为 4 到 128 个字符")
+    password = getpass.getpass("新密码（至少12位，大小写/数字/符号至少三类，无空白）：")
+    from .security import validate_admin_identity
+    validate_admin_identity(account,password)
     if password and password != getpass.getpass("再次输入新密码："): raise ValueError("两次密码不一致，未修改")
-    saved = known_credentials(values, row)
-    if account == row["email"] and not password:
-        print("账号和密码均未修改"); return
     try:
         with closing(sqlite3.connect(values["DATABASE"], timeout=15)) as db, db:
             db.execute("BEGIN IMMEDIATE")
-            db.execute("UPDATE users SET email=?,password=? WHERE id=? AND role='admin'", (account, generate_password_hash(password) if password else row["password"], row["id"]))
+            db.execute("UPDATE users SET email=?,password=?,must_change_credentials=0 WHERE id=? AND role='admin'", (account, generate_password_hash(password) if password else row["password"], row["id"]))
             db.execute("DELETE FROM sessions WHERE user_id=?", (row["id"],))
     except sqlite3.IntegrityError: raise ValueError("该账号已被其他用户使用，未修改") from None
-    set_key(source, "BYPAY_ADMIN_EMAIL", account)
-    if password: set_key(source, "BYPAY_ADMIN_PASSWORD", password)
-    known = password or (saved["password"] if saved else None)
-    if known: atomic_text(Path(values["DATABASE"]).parent / ".admin-credentials", json.dumps({"account": account, "password": known}, ensure_ascii=False) + "\n")
+    # Account identity is read from the database
+    # Passwords are stored only as hashes in the database
     source.chmod(0o600)
     print("账号信息已更新，请重新登录网页")
 

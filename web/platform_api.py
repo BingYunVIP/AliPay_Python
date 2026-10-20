@@ -188,7 +188,9 @@ def install_platform(app,auth,create_payment,ApiError,same_origin):
     @app.post('/api/admin/settlements/<identity>')
     @auth(session_only=True,admin=True)
     def settlement_result(identity):
-        data=body();guarded(lambda:ops.finish_settlement(identity,data.get('action'),data.get('reference')))
+        data=body()
+        if set(data)-{'action','reference'}:raise ApiError('invalid_settlement_evidence')
+        guarded(lambda:ops.finish_settlement(identity,data.get('action'),data.get('reference')))
         trace('settlement.result','settlement_'+data['action'],{'id':identity,'reference':data.get('reference')},user_id=g.user['id']);return jsonify(ok=True)
 
     @app.get('/api/admin/tasks')

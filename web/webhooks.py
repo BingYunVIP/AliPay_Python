@@ -13,21 +13,10 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
-def local_callback_origins(site_origin, port=8100):
-    parsed = urlsplit(site_origin)
-    if parsed.scheme != "http" or parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
-        return set()
-    return {f"http://{host}:{int(port)}" for host in ("127.0.0.1", "localhost", "[::1]")}
-
-
-def validate_callback(url, allowed_hosts, local_origins=()):
+def validate_callback(url, allowed_hosts):
     if not isinstance(url, str) or len(url) > 2048 or any(ord(c) < 33 for c in url):
         raise ValueError("invalid_merchant_callback")
     parsed = urlsplit(url)
-    if (parsed.scheme == "http" and f"http://{parsed.netloc}" in local_origins
-            and parsed.hostname in {"127.0.0.1", "localhost", "::1"} and parsed.path == "/notify"
-            and not parsed.username and not parsed.password and not parsed.fragment and not parsed.query):
-        return parsed
     if (parsed.scheme != "https" or parsed.hostname not in allowed_hosts or parsed.username or
             parsed.password or parsed.fragment or parsed.query or parsed.port not in {None, 443}):
         raise ValueError("invalid_merchant_callback")
@@ -69,22 +58,11 @@ class WebhookSigner:
                 "X-ByPay-Event-Id": event_id}
 
 
-def send_to_merchant(url, body, headers, allowed_hosts, timeout=10, local_origins=(), method="POST"):
-    parsed = validate_callback(url, allowed_hosts, local_origins)
+def send_to_merchant(url, body, headers, allowed_hosts, timeout=10, method="POST"):
+    parsed = validate_callback(url, allowed_hosts)
     target = (parsed.path or "/") + ("?" + body.decode("ascii") if method == "GET" else "")
     content = None if method == "GET" else body
     if method not in {"POST", "GET"}: raise ValueError("invalid_callback_method")
-    if parsed.scheme == "http":
-        # A local Pay instance can reach only the demo's explicit /notify endpoint
-        # Pin localhost to a literal loopback address; no external DNS lookup
-        host = "::1" if parsed.hostname == "::1" else "127.0.0.1"
-        connection = http.client.HTTPConnection(host, port=parsed.port, timeout=timeout)
-        try:
-            connection.request(method, target, body=content, headers=headers)
-            response = connection.getresponse()
-            return response.status == 200 and response.read(1024).strip() == b"success", response.status
-        finally:
-            connection.close()
     addresses = sorted({row[4][0] for row in socket.getaddrinfo(parsed.hostname, 443, type=socket.SOCK_STREAM)})
     if not addresses or any(not ipaddress.ip_address(ip).is_global for ip in addresses):
         raise ValueError("callback_address_blocked")
@@ -102,7 +80,7 @@ def send_to_merchant(url, body, headers, allowed_hosts, timeout=10, local_origin
         connection.close()
 
 
-def deliver_one(store, signer, trace, allowed_hosts, sender=None, local_origins=()):
+def deliver_one(store, signer, trace, allowed_hosts):
     job = store.claim_delivery()
     if not job:
         return False
@@ -116,10 +94,7 @@ def deliver_one(store, signer, trace, allowed_hosts, sender=None, local_origins=
             body = urlencode(merchants.notification(job["out_trade_no"])).encode('ascii')
             headers = {"Accept":"text/plain", "X-ByPay-Event-Id":job["id"]}
             method = "GET"
-        if sender is None:
-            success, http_status = send_to_merchant(job["url"], body, headers, allowed_hosts, timeout=store.policy()["callback_timeout_seconds"], local_origins=local_origins, method=method)
-        else:
-            success, http_status = sender(job["url"], body, headers, allowed_hosts)
+        success, http_status = send_to_merchant(job["url"], body, headers, allowed_hosts, timeout=store.policy()["callback_timeout_seconds"], method=method)
         if not success:
             error = "merchant_did_not_acknowledge"
     except Exception as exc:

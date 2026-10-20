@@ -113,7 +113,7 @@ async function save() {
           <input id="site-return_url" name="return_url" v-model.trim="draft.return_url" class="field" type="url" placeholder="https://pay.bingyun.vip/payment/return" autocomplete="off" spellcheck="false" required :disabled="busy" v-bind="aria('return_url')" />
         </FormRow>
         <FormRow field="site-callback_hosts" stacked :label="t('商户回调域名白名单', 'Allowed merchant callback domains')" :hint="t('输入域名后按回车添加，自动去掉 http(s):// 与路径；用于接收 Pay 发出的业务回调', 'Press Enter to add a domain; scheme and path are removed. Pay only calls these hosts')" :error="message('callback_hosts')">
-          <TagInput id="site-callback_hosts" v-model="draft.callback_hosts" normalize="domain" linkable :placeholder="t('test.bingyun.vip', 'test.bingyun.vip')" :disabled="busy" />
+          <TagInput id="site-callback_hosts" v-model="draft.callback_hosts" normalize="domain" linkable :placeholder="t('merchant.example.com', 'merchant.example.com')" :disabled="busy" />
         </FormRow>
       </FormGroup>
     </div>

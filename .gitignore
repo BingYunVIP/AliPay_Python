@@ -35,7 +35,15 @@ playwright-report/
 
 # Historical local scripts contain real test identifiers. Keep them local.
 /scripts/
-/README.md
 
 .tools/
 .venv.previous-*/
+
+# Publish code only. Keep internal documentation and verification proofs local.
+*.md
+/docs/
+/verification/
+*.zip
+*.zip.sha256
+# Required third-party license notices remain with their redistributable assets.
+!frontend/public/**/LICENSE*.md

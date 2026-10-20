@@ -1,8 +1,9 @@
 <script setup>
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { api, copyText, t } from '../state'
+import { api, copyText, t, locale } from '../state'
 import { fullDate, status as statusName } from './format'
 import Brand from '../components/Brand.vue'
+import CheckoutReceipt from '../components/CheckoutReceipt.vue'
 import Icon from '../components/Icon.vue'
 
 // One receipt card for every payment product: page and wap show a scannable code,
@@ -12,12 +13,13 @@ const now = ref(Date.now()), ready = ref(Boolean(props.order.cashier_qr) || prop
 const preparing = ref(false), failed = ref(false), attempt = ref(0), copied = ref(false), zoom = ref(null), inline = ref('')
 let tick, copyTimer, disposed = false
 
-const channelName = computed(() => ({ alipay: t('支付宝', 'Alipay'), wechat: t('微信支付', 'WeChat Pay'), paypal: 'PayPal', stripe: 'Stripe' })[props.order.channel] || props.order.channel)
+const channelName = computed(() => ({ alipay: t('支付宝', 'Alipay'), wechat: t('微信支付', 'WeChat Pay'), paypal: 'PayPal', stripe: 'Stripe', crypto: 'Crypto' })[props.order.channel] || props.order.channel)
 const remaining = computed(() => Math.max(0, Math.ceil(props.order.expires_at - now.value / 1000)))
 const countdown = computed(() => `${Math.floor(remaining.value / 60)}:${String(remaining.value % 60).padStart(2, '0')}`)
 const phase = computed(() => {
   const order = props.order
   if (order.paid_at) return 'paid'
+  if (order.status==='CONFIRMING')return 'confirming'
   if (order.status === 'EXPIRED' || (order.status === 'CREATED' && !order.deleted_at && remaining.value <= 0)) return 'expired'
   if (order.status !== 'CREATED' || order.deleted_at) return 'closed'
   return 'waiting'
@@ -34,6 +36,7 @@ const parameters = computed(() => payload.value.kind === 'wechat_app' ? JSON.str
   : `my.tradePay({\n  tradeNO: ${JSON.stringify(payload.value.trade_no || props.order.trade_no || '')}\n})`)
 const parameterLabel = computed(() => ({ wechat_app: 'WeChat APP SDK', wechat_jsapi: 'wx.requestPayment' })[payload.value.kind] || (props.order.product === 'app' ? 'orderString' : 'my.tradePay'))
 // the finished image arrives with the answer that says the code is ready, so no second request is needed to show it
+const receipt = computed(()=>({...props.order,out_trade_no:props.order.merchant_order_no||props.order.out_trade_no,paid:Boolean(props.order.paid_at),qr_ready:ready.value&&!failed.value,crypto:props.order.channel==='crypto'?{network:payload.value.network,asset:payload.value.asset,crypto_amount:payload.value.crypto_amount,address:payload.value.address,confirmations:props.order.crypto_confirmations,required_confirmations:payload.value.confirmations}:null}))
 const source = computed(() => inline.value ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(inline.value)}` : `/api/v1/payments/${encodeURIComponent(props.order.out_trade_no)}/qr.svg?v=${attempt.value}`)
 
 async function prepare() {
@@ -56,7 +59,8 @@ watch(() => phase.value === 'waiting', active => {
 onBeforeUnmount(() => { disposed = true; clearInterval(tick); clearTimeout(copyTimer) })
 </script>
 <template>
-  <section class="payment-qr-card" :class="[`qr-${order.channel}`, `is-${phase}`]" :aria-label="t('订单收款码', 'Payment code')">
+  <CheckoutReceipt v-if="showsCode" class="payment-receipt-host" card-class="payment-qr-card" embedded :zh="locale==='zh'" :order="receipt" :qr-source="source" :busy="preparing" @refresh="retry"/>
+  <section v-else class="payment-qr-card" :class="[`qr-${order.channel}`, `is-${phase}`]" :aria-label="t('订单收款码', 'Payment code')">
     <header class="qr-receipt-header">
       <span class="qr-channel"><Brand :name="order.channel" /><b>{{ channelName }}</b></span>
       <strong class="qr-amount"><small>￥</small>{{ order.amount }}</strong>

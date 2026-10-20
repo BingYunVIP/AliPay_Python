@@ -4,6 +4,7 @@ import json
 import os
 import secrets
 import time
+from decimal import Decimal
 from pathlib import Path
 
 from cryptography.fernet import Fernet
@@ -25,7 +26,7 @@ def persist_once(path, data):
     finally: temp.unlink(missing_ok=True)
 
 
-EPAY_CHANNELS = {'alipay':'alipay','wxpay':'wechat'}  # the Epay protocol calls WeChat Pay "wxpay"
+EPAY_CHANNELS = {'alipay':'alipay','wxpay':'wechat','crypto':'crypto'}  # the Epay protocol calls WeChat Pay "wxpay"
 EPAY_TYPES = {channel:name for name,channel in EPAY_CHANNELS.items()}
 QUOTA_RESERVATION_TTL = 120
 
@@ -33,34 +34,6 @@ QUOTA_RESERVATION_TTL = 120
 class Merchants:
     def __init__(self, store, site):
         self.store, self.site = store, site
-        with store.connect() as db:
-            db.executescript('''
-                CREATE TABLE IF NOT EXISTS merchant_accounts (
-                  pid INTEGER PRIMARY KEY, user_id INTEGER UNIQUE NOT NULL REFERENCES users(id),
-                  md5_key BLOB NOT NULL, public_key TEXT NOT NULL DEFAULT '', mode TEXT NOT NULL DEFAULT 'both', created_at INTEGER NOT NULL);
-                CREATE TABLE IF NOT EXISTS merchant_orders (
-                  platform_no TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), pid INTEGER NOT NULL REFERENCES merchant_accounts(pid),
-                  merchant_no TEXT NOT NULL, version TEXT NOT NULL, request_hash TEXT NOT NULL,
-                  md5_key BLOB NOT NULL, return_url TEXT NOT NULL, param TEXT NOT NULL DEFAULT '',
-                  token_hash TEXT UNIQUE NOT NULL, token BLOB NOT NULL, created_at INTEGER NOT NULL,
-                  UNIQUE(user_id,merchant_no));
-                CREATE TABLE IF NOT EXISTS merchant_key_info (name TEXT PRIMARY KEY, fingerprint TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS merchant_payment_settings (user_id INTEGER PRIMARY KEY REFERENCES users(id), version INTEGER NOT NULL, payload TEXT NOT NULL, updated_at INTEGER NOT NULL);
-                CREATE TABLE IF NOT EXISTS merchant_payment_cursors (user_id INTEGER NOT NULL, channel TEXT NOT NULL, config_id INTEGER NOT NULL, PRIMARY KEY(user_id,channel));
-                CREATE TABLE IF NOT EXISTS merchant_quota_reservations (number TEXT PRIMARY KEY, user_id INTEGER NOT NULL, amount TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL DEFAULT 0);
-                CREATE TABLE IF NOT EXISTS merchant_cancel_requests (
-                  platform_no TEXT PRIMARY KEY REFERENCES orders(out_trade_no), user_id INTEGER NOT NULL REFERENCES users(id),
-                  state TEXT NOT NULL CHECK(state IN ('pending','confirmed','failed','superseded')),
-                  created_at INTEGER NOT NULL, provider_state TEXT NOT NULL DEFAULT '');
-                CREATE INDEX IF NOT EXISTS merchant_cancel_window ON merchant_cancel_requests(user_id,state,created_at);
-            ''')
-        with store.connect() as db:
-            columns={r['name'] for r in db.execute('PRAGMA table_info(merchant_orders)')}
-            if 'amount' not in columns: db.execute("ALTER TABLE merchant_orders ADD COLUMN amount TEXT NOT NULL DEFAULT '0.00'")
-            if 'reservation_state' not in columns: db.execute("ALTER TABLE merchant_orders ADD COLUMN reservation_state TEXT NOT NULL DEFAULT 'active'")
-            reservation_columns={r['name'] for r in db.execute('PRAGMA table_info(merchant_quota_reservations)')}
-            if 'expires_at' not in reservation_columns: db.execute("ALTER TABLE merchant_quota_reservations ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0")
-            db.execute('UPDATE merchant_quota_reservations SET expires_at=created_at+? WHERE expires_at<=created_at',(QUOTA_RESERVATION_TTL,))
         vault = store.path.parent/'merchant-master.key'
         platform = store.path.parent/'epay-platform-private.pem'
         with store.connect() as db:
@@ -68,7 +41,7 @@ class Merchants:
             for name, path in (('vault',vault),('platform',platform)):
                 previous = db.execute('SELECT fingerprint FROM merchant_key_info WHERE name=?',(name,)).fetchone()
                 if not path.exists():
-                    if previous: raise ValueError('merchant_key_file_missing_restore_backup')
+                    if previous: raise ValueError('merchant_key_file_missing')
                     data = Fernet.generate_key() if name == 'vault' else rsa.generate_private_key(public_exponent=65537,key_size=2048).private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.PKCS8,serialization.NoEncryption())
                     persist_once(path,data)
                 digest = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -117,14 +90,19 @@ class Merchants:
         return self.describe(user_id)
 
     @staticmethod
-    def default_payment_settings():
-        return {'minimum_amount':'0.01','maximum_amount':'3000.00','daily_limit':'0.00','fee_rate':'1.50','timeout_minutes':15,'max_pending_orders':0,'load_balance':'first','cancel_limit':0,'cancel_window_minutes':60}
+    def default_payment_settings(fee_rate='2.50'):
+        return {'minimum_amount':'0.01','maximum_amount':'3000.00','daily_limit':'0.00','fee_rate':fee_rate,'timeout_minutes':15,'max_pending_orders':0,'load_balance':'first','cancel_limit':0,'cancel_window_minutes':60}
 
     def payment_settings(self, user_id, db=None):
         if db is None:
             with self.store.connect() as conn: return self.payment_settings(user_id, conn)
+        group=self.store.groups.for_user(user_id,db) if hasattr(self.store,'groups') else {'service_rate':'1.50','cost_rate':'1.00'}
+        group_rate=format(Decimal(group['service_rate'])+Decimal(group['cost_rate']),'.2f')
         row=db.execute('SELECT version,payload FROM merchant_payment_settings WHERE user_id=?',(user_id,)).fetchone()
-        return {'version':row['version'],'settings':json.loads(row['payload'])} if row else {'version':0,'settings':self.default_payment_settings()}
+        if row:
+            settings=json.loads(row['payload']);settings['fee_rate']=group_rate
+            return {'version':row['version'],'settings':settings}
+        return {'version':0,'settings':self.default_payment_settings(group_rate)}
 
     def save_payment_settings(self, user_id, payload, maximum_amount, platform_timeout=1440):
         from decimal import Decimal, InvalidOperation
@@ -149,6 +127,8 @@ class Merchants:
             db.execute('BEGIN IMMEDIATE')
             current=self.payment_settings(user_id,db)
             if payload['version']!=current['version']: raise ValueError('merchant_payment_settings_conflict')
+            group=self.store.groups.for_user(user_id,db)
+            value['fee_rate']=format(Decimal(group['service_rate'])+Decimal(group['cost_rate']),'.2f')
             version=current['version']+1
             db.execute('INSERT INTO merchant_payment_settings VALUES (?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET version=excluded.version,payload=excluded.payload,updated_at=excluded.updated_at',(user_id,version,json.dumps(value,separators=(',',':')),int(time.time())))
         return {'version':version,'settings':value}
@@ -167,7 +147,7 @@ class Merchants:
         return self.store.order(row['platform_no']) if row else None
 
     def reserve(self, account, parameters, version):
-        content = {k:parameters.get(k,'') for k in ('out_trade_no','name','money','type','notify_url','return_url','param')}
+        content = {k:parameters.get(k,'') for k in ('out_trade_no','name','money','type','notify_url','return_url','param','crypto_asset')}
         content['version'] = version
         digest = hashlib.sha256(json.dumps(content,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
         from decimal import Decimal
@@ -302,10 +282,14 @@ class Merchants:
             db.execute("UPDATE merchant_cancel_requests SET state=?,provider_state=? WHERE platform_no=? AND user_id=? AND state='pending'",(state,provider_state,number,user_id))
             return False
 
-    def select_config(self, user_id, channel, channels, requested=None):
+    def select_config(self, user_id, channel, channels, requested=None, crypto_asset=None):
         if requested is not None: return requested
         strategy=self.payment_settings(user_id)['settings']['load_balance']
         candidates=sorted((item for item in channels.all() if item['id']==channel and item['enabled'] and item['configured'] and item['integrated']),key=lambda item:item['config_id'])
+        if channel=='crypto' and crypto_asset:
+            code=str(crypto_asset).upper()
+            candidates=[item for item in candidates if f"{item['fields'].get('network','')}_{item['fields'].get('asset','')}".upper()==code]
+            if not candidates:raise ValueError('crypto_asset_configuration_missing')
         if not candidates: return None
         if strategy=='first' or len(candidates)==1: return candidates[0]['config_id']
         with self.store.connect() as db:
@@ -336,7 +320,9 @@ class Merchants:
         record, order = self.order(number), self.store.order(number)
         if not record or not order or not order['paid_at']: raise ValueError('order_not_paid')
         fields = {'pid':record['pid'],'trade_no':number,'out_trade_no':record['merchant_no'],'type':EPAY_TYPES.get(order['channel'],order['channel']),
-                  'name':order['subject'],'money':order['amount'],'trade_status':'TRADE_SUCCESS'}
+                  'name':order['subject'],'money':order['amount'],'order_amount':order['amount'],'order_currency':'CNY','payment_amount':order['crypto_amount'] if order['channel']=='crypto' else order['amount'],'payment_currency':order['crypto_asset'] if order['channel']=='crypto' else 'CNY','trade_status':'TRADE_SUCCESS'}
+        if order['channel'] == 'crypto':
+            fields.update(self._crypto_result_fields(order))
         if record['param']: fields['param']=record['param']
         if record['version']=='v2':
             fields['api_trade_no']=order['trade_no'] or ''
@@ -345,8 +331,16 @@ class Merchants:
 
     def query(self, order):
         record = self.order(order['out_trade_no'])
-        return {'trade_no':record['platform_no'],'out_trade_no':record['merchant_no'],'pid':record['pid'],
-                'api_trade_no':order['trade_no'] or '', 'type':EPAY_TYPES.get(order['channel'],order['channel']),'name':order['subject'],'money':order['amount'],
+        result = {'trade_no':record['platform_no'],'out_trade_no':record['merchant_no'],'pid':record['pid'],
+                'api_trade_no':order['trade_no'] or '', 'type':EPAY_TYPES.get(order['channel'],order['channel']),'name':order['subject'],'money':order['amount'],'order_amount':order['amount'],'order_currency':'CNY','payment_amount':order['crypto_amount'] if order['channel']=='crypto' else order['amount'],'payment_currency':order['crypto_asset'] if order['channel']=='crypto' else 'CNY',
                 'param':record['param'],'status':1 if order['paid_at'] else 0,'state':'EXPIRED' if order['status']=='CREATED' and order['expires_at']<=int(time.time()) else order['status'],
                 'addtime':time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(order['created_at'])),
                 'endtime':time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(order['paid_at'])) if order['paid_at'] else ''}
+        if order['channel'] == 'crypto':
+            result.update(self._crypto_result_fields(order))
+        return result
+
+    @staticmethod
+    def _crypto_result_fields(order):
+        return {'network':order.get('crypto_network') or '', 'asset':order.get('crypto_asset') or '',
+                'crypto_amount':order.get('crypto_amount') or '', 'crypto_txid':order.get('crypto_txid') or ''}

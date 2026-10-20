@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { api, errorText, t } from '../state'
+import { api, auth, errorText, t } from '../state'
 import Icon from '../components/Icon.vue'
 
 const route = useRoute()
@@ -66,7 +66,7 @@ onBeforeUnmount(() => { disposed = true; clearTimeout(timer); controller?.abort(
       </dl>
       <div class="return-actions">
         <button v-if="token && !paid && !closed" class="button" :disabled="busy" @click="check(true)">{{ busy ? t('正在核验', 'Verifying') : t('重新查询', 'Check again') }}</button>
-        <RouterLink class="button" :class="{ 'button-secondary': token && !paid && !closed }" to="/dashboard?tab=orders">{{ t('查看订单', 'View orders') }}<Icon name="arrow" :size="17" /></RouterLink>
+        <RouterLink class="button" :class="{ 'button-secondary': token && !paid && !closed }" :to="`/${auth.user?.role||'user'}/orders`">{{ t('查看订单', 'View orders') }}<Icon name="arrow" :size="17" /></RouterLink>
       </div>
     </div>
   </section>

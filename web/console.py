@@ -31,7 +31,7 @@ def site_host(value):
 
 ZONE = ZoneInfo("Asia/Shanghai")
 # The first part of an event's stage names its category in the event log
-EVENT_CATEGORIES = {"notify", "merchant", "create", "query", "console", "sdk", "refund", "order", "return", "checkout", "settings", "settlement", "mail", "task", "domain", "risk", "request"}
+EVENT_CATEGORIES = {"notify", "merchant", "create", "query", "console", "sdk", "refund", "order", "return", "checkout", "settings", "settlement", "mail", "task", "domain", "risk", "request", "crypto", "pricing", "account"}
 
 
 def install_console(app, store, auth, trace, cfg, ready, ApiError):
@@ -62,7 +62,7 @@ def install_console(app, store, auth, trace, cfg, ready, ApiError):
         if selection: return where, args
         channel=request.args.get("channel","all")
         if channel != "all":
-            if channel not in {"alipay","wechat","paypal","stripe"}: raise ApiError("invalid_channel_config")
+            if channel not in {"alipay","wechat","paypal","stripe","crypto"}: raise ApiError("invalid_channel_config")
             where += " AND o.channel=?"; args.append(channel)
         product=request.args.get('product','all')
         if product!='all':
@@ -91,7 +91,7 @@ def install_console(app, store, auth, trace, cfg, ready, ApiError):
             args += [term] * 9
         status = request.args.get("status", "all")
         if status != "all":
-            if status not in {"CREATED", "PAID", "CLOSED", "EXPIRED", "REFUNDING", "PARTIALLY_REFUNDED", "REFUNDED"}: raise ApiError("invalid_status")
+            if status not in {"CREATED", "CONFIRMING", "PAID", "CLOSED", "EXPIRED", "REFUNDING", "PARTIALLY_REFUNDED", "REFUNDED"}: raise ApiError("invalid_status")
             where += " AND (CASE WHEN o.status='CREATED' AND o.expires_at<=CAST(strftime('%s','now') AS INTEGER) THEN 'EXPIRED' ELSE o.status END)=?"; args.append(status)
         period = request.args.get("period", "all")
         where += " AND o.created_at>=?"; args.append(period_start(period))
@@ -133,7 +133,7 @@ def install_console(app, store, auth, trace, cfg, ready, ApiError):
                        lifetime_revenue_cents=all_revenue, paid_count=paid_count, order_count=total,
                        paid_ratio=round(sum(counts.get(k,0) for k in ("PAID","REFUNDING","PARTIALLY_REFUNDED","REFUNDED")) / total * 100, 1) if total else None,
                        pending_count=counts.get("CREATED", 0), callbacks=callbacks, users=users, trend=bars,
-                       recent_orders=[present_order(row) for row in recent],
+                       recent_orders=[present_order(row,admin=g.user["role"]=="admin") for row in recent],
                        channel_enabled=store.setting("alipay_enabled", True), channel_ready=ready(),
                        distribution=distribution, config_count=len(app.extensions["channels"].all()),
                        enabled_config_count=sum(ch["enabled"] and ch["configured"] and ch["integrated"] for ch in app.extensions["channels"].all()),
@@ -148,14 +148,15 @@ def install_console(app, store, auth, trace, cfg, ready, ApiError):
             total = db.execute(f"""SELECT COUNT(*) FROM orders o LEFT JOIN users u ON u.id=o.user_id
                 LEFT JOIN merchant_accounts m ON m.user_id=o.user_id LEFT JOIN channel_configs c ON c.id=o.payment_config_id
                 WHERE {where}""", args).fetchone()[0]
-            rows = db.execute(f"""SELECT o.*,c.name config_name,u.email merchant_email,m.pid merchant_id,
-                COALESCE(f.fee,0) fee_cents FROM orders o
+            rows = db.execute(f"""SELECT o.*,mo.merchant_no merchant_order_no,c.name config_name,u.email merchant_email,m.pid merchant_id,
+                COALESCE(f.fee,0) fee_cents,COALESCE(f.fee_reversed,0) fee_reversed_cents FROM orders o
                 LEFT JOIN channel_configs c ON c.id=o.payment_config_id
                 LEFT JOIN users u ON u.id=o.user_id
                 LEFT JOIN merchant_accounts m ON m.user_id=o.user_id
                 LEFT JOIN financial_orders f ON f.number=o.out_trade_no
+                LEFT JOIN merchant_orders mo ON mo.platform_no=o.out_trade_no
                 WHERE {where} ORDER BY o.created_at DESC,o.out_trade_no DESC LIMIT ? OFFSET ?""", [*args, size, (page - 1) * size]).fetchall()
-        return jsonify(orders=[present_order(row) for row in rows], total=total, page=page, page_size=size)
+        return jsonify(orders=[present_order(row,admin=g.user["role"]=="admin") for row in rows], total=total, page=page, page_size=size)
 
     @app.get("/api/console/orders/ids")
     @auth(session_only=True)
@@ -201,17 +202,22 @@ def install_console(app, store, auth, trace, cfg, ready, ApiError):
                     LEFT JOIN merchant_accounts m ON m.user_id=o.user_id LEFT JOIN channel_configs c ON c.id=o.payment_config_id
                     WHERE {where}""", args).fetchone()[0] > 10000:
                 raise ApiError("export_limit_exceeded", 422)
-            rows = db.execute(f"""SELECT o.* FROM orders o LEFT JOIN users u ON u.id=o.user_id
+            rows = db.execute(f"""SELECT o.*,mo.merchant_no merchant_order_no,u.email merchant_email,m.pid merchant_id,
+                COALESCE(f.fee,0) fee_cents,COALESCE(f.fee_reversed,0) fee_reversed_cents
+                FROM orders o LEFT JOIN users u ON u.id=o.user_id
                 LEFT JOIN merchant_accounts m ON m.user_id=o.user_id LEFT JOIN channel_configs c ON c.id=o.payment_config_id
+                LEFT JOIN financial_orders f ON f.number=o.out_trade_no LEFT JOIN merchant_orders mo ON mo.platform_no=o.out_trade_no
                 WHERE {where} ORDER BY o.created_at DESC""", args).fetchall()
         output = io.StringIO()
         writer = csv.writer(output)
-        columns = ["out_trade_no", "subject", "amount", "channel", "product", "status", "trade_no", "created_at", "paid_at"]
+        columns=['subject','merchant_order_no','channel','product','order_amount','order_currency','payment_amount','payment_currency','fee_cny','net_income_cny','status','created_at','paid_at','client_ip']
+        if g.user['role']=='admin':columns=['merchant_id','merchant_email','out_trade_no',*columns,'fixed_rate_snapshot','market_rate_snapshot']
         writer.writerow(columns)
         for row in rows:
-            values = [str(row[k] if row[k] is not None else "") for k in columns]
-            # Excel 会把 12 位以上的纯数字变成科学计数法，前缀一个单引号让它按文本显示
-            writer.writerow(["'" + v if v.lstrip().startswith(("=", "+", "-", "@")) or v.startswith(("\t", "\r", "\n")) or (v.isdigit() and len(v) >= 12) else v for v in values])
+            item=present_order(row,admin=g.user['role']=='admin')
+            item['user_id']=row['user_id']
+            values=[str(item.get(key) if item.get(key) is not None else '') for key in columns]
+            writer.writerow(["'"+value if value.lstrip().startswith(('=','+','-','@')) or (value.isdigit() and len(value)>=12) else value for value in values])
         trace("console.export", "orders_exported", {"count": len(rows)}, user_id=g.user["id"])
         return Response("\ufeff" + output.getvalue(), mimetype="text/csv", headers={"Content-Disposition": 'attachment; filename="pay-orders.csv"'})
 
@@ -262,6 +268,36 @@ def install_console(app, store, auth, trace, cfg, ready, ApiError):
         trace("console.callback", "callback_retry_scheduled", {"event_id": event_id}, row["out_trade_no"], g.user["id"])
         return jsonify(ok=True)
 
+    @app.get('/api/admin/merchant-groups')
+    @auth(session_only=True, admin=True)
+    def merchant_groups():
+        return jsonify(groups=store.groups.all())
+
+    @app.post('/api/admin/merchant-groups')
+    @auth(session_only=True, admin=True)
+    def create_merchant_group():
+        try: result=store.groups.create(request.get_json(silent=True))
+        except ValueError as exc: raise ApiError(str(exc)) from None
+        trace('merchant.group','merchant_group_saved',{'group_id':result['id'],'created':True},user_id=g.user['id'])
+        return jsonify(group=result),201
+
+    @app.put('/api/admin/merchant-groups/<int:identity>')
+    @auth(session_only=True, admin=True)
+    def save_merchant_group(identity):
+        try: result = store.groups.save(identity, request.get_json(silent=True))
+        except ValueError as exc: raise ApiError(str(exc), 409 if str(exc).endswith('_conflict') else 400) from None
+        trace('merchant.group', 'merchant_group_saved', {'group_id':identity}, user_id=g.user['id'])
+        return jsonify(group=result)
+
+    @app.put('/api/admin/users/<int:identity>/group')
+    @auth(session_only=True, admin=True)
+    def assign_merchant_group(identity):
+        payload=request.get_json(silent=True)
+        if not isinstance(payload,dict): raise ApiError('invalid_json')
+        try: store.groups.assign(identity,payload.get('group_id'),g.user['id'])
+        except ValueError as exc: raise ApiError(str(exc)) from None
+        return jsonify(ok=True)
+
     @app.get("/api/admin/users")
     @auth(session_only=True, admin=True)
     def users():
@@ -270,7 +306,7 @@ def install_console(app, store, auth, trace, cfg, ready, ApiError):
         where, args = ("instr(u.email,?)>0", [search]) if search else ("1=1", [])
         with store.connect() as db:
             total = db.execute(f"SELECT COUNT(*) FROM users u WHERE {where}", args).fetchone()[0]
-            rows = db.execute(f"""SELECT u.id,u.email,u.role,u.disabled,u.created_at,k.suffix,m.pid merchant_id,m.mode signature_mode,a.review,a.fee_due,a.fee_paid,a.risk_hold,a.risk_reason,a.pay_enabled,
+            rows = db.execute(f"""SELECT u.id,u.email,u.role,u.group_id,u.disabled,u.created_at,k.suffix,m.pid merchant_id,m.mode signature_mode,a.review,a.review_required,a.fee_due,a.fee_paid,a.risk_hold,a.risk_reason,a.pay_enabled,
                 (SELECT COUNT(*) FROM orders o WHERE o.user_id=u.id) order_count,
                 (SELECT COUNT(*) FROM orders o WHERE o.user_id=u.id AND o.paid_at IS NOT NULL) paid_count,
                 (SELECT COALESCE(SUM(CAST(ROUND(CAST(amount AS NUMERIC)*100) AS INTEGER)),0) FROM orders o WHERE o.user_id=u.id AND o.paid_at IS NOT NULL) revenue_cents,
@@ -293,31 +329,32 @@ def install_console(app, store, auth, trace, cfg, ready, ApiError):
         try: hosts = list(dict.fromkeys(host for host in (site_host(value) for value in values) if host))
         except ValueError: raise ApiError("invalid_domain")
         if len(hosts) > rules["merchant_domain_limit"]: raise ApiError("domain_limit_exceeded")
-        whitelist, pay_enabled, disabled = payload.get("callback_whitelist", False), payload.get("pay_enabled", True), payload.get("disabled")
-        if type(whitelist) is not bool or type(pay_enabled) is not bool or (disabled is not None and type(disabled) is not bool): raise ApiError("invalid_json")
+        pay_enabled, disabled = payload.get("pay_enabled", True), payload.get("disabled")
+        group_id = payload.get("group_id", 1)
+        if group_id == 2: raise ApiError('manual_merchant_cannot_enter_admin_group')
+        if type(group_id) is not int or group_id not in {g["id"] for g in store.groups.all()}: raise ApiError("invalid_merchant_group")
+        if type(pay_enabled) is not bool or (disabled is not None and type(disabled) is not bool): raise ApiError("invalid_json")
         try: deposit = cents(str(payload.get("deposit", "0.00")).strip() or "0.00")
         except ValueError: raise ApiError("invalid_amount")
         # 保证金低于门槛时默认停用商户状态，管理员仍可显式开启
         if disabled is None: disabled = deposit < cents(rules["deposit_minimum"])
-        try: user = store.register(email.strip().lower(), password)
+        try: user = store.register(email.strip().lower(), password, manual=True)
         except sqlite3.IntegrityError: raise ApiError("email_unavailable", 409)
         app.extensions["merchants"].ensure(user["id"])
         operations.ensure(user["id"])
+        store.groups.assign(user["id"], group_id, g.user["id"])
         with store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             db.execute("UPDATE users SET disabled=? WHERE id=?", (int(disabled), user["id"]))
             db.execute("UPDATE merchant_access SET pay_enabled=? WHERE user_id=?", (int(pay_enabled), user["id"]))
             for host in hosts:
                 db.execute("INSERT OR IGNORE INTO merchant_domains(user_id,host,status,created_at) VALUES (?,?,?,?)",
-                           (user["id"], host, "approved" if whitelist else "pending", int(time.time())))
+                           (user["id"], host, "approved", int(time.time())))
         if deposit: operations.credit_deposit(user["id"], deposit, "user:" + str(user["id"]))
-        if whitelist and hosts:
-            # 商户回调域名白名单是平台级的，勾选后立即同步到系统设置
-            settings = app.extensions["site_settings"]
-            settings.save({"callback_hosts": sorted(set(settings.read()["callback_hosts"]) | set(hosts))})
-        trace("console.user", "user_created", {"target_user_id": user["id"], "domains": hosts, "callback_whitelist": whitelist,
+        # Approved merchant_domains are the authoritative per-merchant callback allowlist.
+        trace("console.user", "user_created", {"target_user_id": user["id"], "domains": hosts, "group_id": group_id,
               "disabled": disabled, "pay_enabled": pay_enabled, "deposit": amount(deposit)}, user_id=g.user["id"])
-        return jsonify(user={**user, "disabled": disabled, "pay_enabled": pay_enabled, "domains": hosts, "deposit": amount(deposit)}), 201
+        return jsonify(user={**user, "disabled": disabled, "pay_enabled": pay_enabled, "domains": hosts, "group_id": group_id, "deposit": amount(deposit)}), 201
 
     @app.post("/api/admin/users/<int:user_id>/access")
     @auth(session_only=True, admin=True)

@@ -6,8 +6,14 @@ const props = defineProps({ open: Boolean, title: String, description: String, b
 const emit = defineEmits(['cancel', 'confirm'])
 const dialog = ref(null)
 // May be mounted already open (per-row dialogs render only while in use); closing before removal restores focus
-onMounted(() => { if (props.open) dialog.value.showModal() })
-watch(() => props.open, async value => { await nextTick(); if (value) { if (!dialog.value.open) dialog.value.showModal() } else dialog.value.close() })
+onMounted(() => { if (props.open && dialog.value) dialog.value.showModal() })
+watch(() => props.open, async value => {
+  await nextTick()
+  const node = dialog.value
+  if (!node) return
+  if (value) { if (!node.open) node.showModal() }
+  else if (node.open) node.close()
+})
 onBeforeUnmount(() => dialog.value?.close())
 function submit() { if (!props.busy && !props.disabled) emit('confirm') }
 </script>

@@ -16,3 +16,8 @@ pycryptodome==4.0.0
 rsa==4.9.1
 Werkzeug==3.1.9
 httpx==0.28.1
+
+# QR decoration is enabled only after machine decoding the actual SVG.
+Pillow==12.3.0
+zxing-cpp==3.1.1
+CairoSVG==2.9.1

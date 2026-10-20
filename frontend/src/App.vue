@@ -5,7 +5,7 @@ import { auth, dark, locale, t } from './state'
 import Icon from './components/Icon.vue'
 import Brand from './components/Brand.vue'
 const route = useRoute()
-const consoleRoute = computed(() => route.path.startsWith('/dashboard'))
+const consoleRoute = computed(() => /^\/(admin|user)(?:\/|$)/.test(route.path))
 const menuOpen = ref(false)
 watch(() => route.path, () => { menuOpen.value = false })
 const links = [
@@ -32,7 +32,7 @@ const links = [
           <button class="locale-button" @click="locale = locale === 'zh' ? 'en' : 'zh'" :aria-label="t('Switch to English', '切换到中文')"><Icon name="language" :size="17" /><span>{{ locale === 'zh' ? 'EN' : '中文' }}</span></button>
           <span class="nav-divider" aria-hidden="true"></span>
           <template v-if="!auth.user"><RouterLink class="nav-login" to="/login">{{ t('登录', 'Sign in') }}</RouterLink><RouterLink class="button button-small nav-register" to="/register">{{ t('注册', 'Sign up') }}</RouterLink></template>
-          <RouterLink v-else to="/dashboard" class="button button-small">{{ t('控制台', 'Console') }}<Icon name="arrow" :size="15" /></RouterLink>
+          <RouterLink v-else :to="auth.user.must_change_credentials ? '/admin/security/setup' : `/${auth.user.role}/overview`" class="button button-small">{{ t('控制台', 'Console') }}<Icon name="arrow" :size="15" /></RouterLink>
           <button class="icon-button mobile-menu-toggle" :aria-expanded="menuOpen" aria-controls="mobile-nav" :aria-label="t('菜单', 'Menu')" @click="menuOpen = !menuOpen"><Icon :name="menuOpen ? 'x' : 'menu'" /></button>
         </div>
       </div>

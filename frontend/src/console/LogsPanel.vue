@@ -1,4 +1,5 @@
 <script setup>
+import {isAdmin} from '../state'
 import { computed, inject, onBeforeUnmount, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { copyText, t } from '../state'
@@ -59,7 +60,7 @@ async function copyDetails(event) {
           <div class="log-detail">
             <div class="log-detail-head">
               <code translate="no">{{ event.stage }}</code><span>{{ t('事件', 'Event') }} #{{ event.id }}</span><span>{{ fullDate(event.created_at) }}</span>
-              <RouterLink v-if="event.out_trade_no" class="text-link push" :to="{ path: '/dashboard', query: { tab: 'orders', q: event.out_trade_no } }">{{ t('查看订单', 'View order') }}<Icon name="chevron" :size="13" /></RouterLink>
+              <RouterLink v-if="event.out_trade_no" class="text-link push" :to="{ path: `/${isAdmin ? 'admin' : 'user'}/orders`, query: { q: event.out_trade_no } }">{{ t('查看订单', 'View order') }}<Icon name="chevron" :size="13" /></RouterLink>
               <button type="button" class="icon-button" :class="{ push: !event.out_trade_no }" :aria-label="t('复制详情', 'Copy details')" @click="copyDetails(event)"><Icon :name="copied === event.id ? 'check' : 'copy'" :size="15" /></button>
             </div>
             <pre translate="no">{{ JSON.stringify(event.details, null, 2) }}</pre>

@@ -14,17 +14,19 @@ provide('console', c)
 // Moving to another console page, or away from the console, with unsaved edits needs a yes; tabs inside one page keep their drafts
 const leave = () => !c.hasUnsaved() || window.confirm(t('有未保存的修改，确定离开当前页面？', 'You have unsaved changes. Leave this page?'))
 onBeforeRouteLeave(leave)
-onBeforeRouteUpdate((to, from) => to.query.tab === from.query.tab || leave())
+onBeforeRouteUpdate((to, from) => to.meta.page === from.meta.page || leave())
 const compact = ref(false), mobileNav = ref(null), quickSearch = ref('')
 const panels = {
   overview: OverviewPanel,
   account:defineAsyncComponent(()=>import('../console/AccountPanel.vue')),
   settlements:defineAsyncComponent(()=>import('../console/SettlementPanel.vue')),
+  rates:defineAsyncComponent(()=>import('../console/RatesPanel.vue')),
   channels: defineAsyncComponent(() => import('../console/ChannelsPanel.vue')),
   testpay: defineAsyncComponent(() => import('../console/PaymentPanel.vue')),
   orders: defineAsyncComponent(() => import('../console/OrdersPanel.vue')),
   webhook: defineAsyncComponent(() => import('../console/CallbacksPanel.vue')),
   users: defineAsyncComponent(() => import('../console/UsersPanel.vue')),
+  groups: defineAsyncComponent(() => import('../console/MerchantGroupsPanel.vue')),
   settings: defineAsyncComponent(() => import('../console/SettingsPanel.vue')),
   logs: defineAsyncComponent(() => import('../console/LogsPanel.vue')),
 }

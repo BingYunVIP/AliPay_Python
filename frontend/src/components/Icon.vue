@@ -1,22 +1,16 @@
 <script setup>
-import { Sun, Moon, Languages, Menu, X, ArrowRight, ArrowUpRight, ShieldCheck, Timer, Zap, Code2,
-  Eye, EyeOff, Monitor, Smartphone, AppWindow, LayoutGrid, Check, Copy, Terminal, CreditCard, LogOut,
-  RefreshCw, KeyRound, Search, CircleHelp, CheckCircle2, AlertCircle, ChevronRight,
-  LoaderCircle, Mail, BookOpen, Store, Users, Globe, Network, LockKeyhole, Pause, Play, Plus,
-  PanelLeft, LayoutDashboard, SlidersHorizontal, FlaskConical, ReceiptText, Webhook, Settings2,
-  ScrollText, Wallet, TrendingUp, Download, CalendarDays, ChevronDown, ChevronLeft,
-  MoreHorizontal, Bell, CheckCheck, CopyCheck, ArrowDownLeft, Circle, UserRound, FileText } from '@lucide/vue'
-defineProps({ name: String, size: { type: [Number, String], default: 20 } })
-const icons = { sun: Sun, moon: Moon, language: Languages, menu: Menu, x: X, arrow: ArrowRight, external: ArrowUpRight,
-  shield: ShieldCheck, timer: Timer, zap: Zap, code: Code2, monitor: Monitor, phone: Smartphone, app: AppWindow,
-  eye: Eye, 'eye-off': EyeOff, grid: LayoutGrid, check: Check, copy: Copy, terminal: Terminal, card: CreditCard, logout: LogOut,
-  refresh: RefreshCw, key: KeyRound, search: Search, help: CircleHelp, success: CheckCircle2, alert: AlertCircle,
-  chevron: ChevronRight, loader: LoaderCircle, mail: Mail, book: BookOpen, store: Store, users: Users,
-  globe: Globe, network: Network, lock: LockKeyhole, pause: Pause, play: Play, plus: Plus,
-  sidebar: PanelLeft, overview: LayoutDashboard, sliders: SlidersHorizontal, test: FlaskConical,
-  receipt: ReceiptText, webhook: Webhook, settings: Settings2, logs: ScrollText, wallet: Wallet,
-  trend: TrendingUp, download: Download, calendar: CalendarDays, down: ChevronDown, back: ChevronLeft,
-  more: MoreHorizontal, bell: Bell, checks: CheckCheck, copied: CopyCheck, incoming: ArrowDownLeft,
-  circle: Circle, user: UserRound, file: FileText }
+import { computed } from 'vue'
+const props = defineProps({ name: String, size: { type: [Number, String], default: 20 } })
+const glyphs = {
+  info: 'info', trash: 'delete', sun: 'light_mode', moon: 'dark_mode', language: 'language', menu: 'menu', x: 'close', arrow: 'arrow_forward', external: 'open_in_new',
+  shield: 'shield', timer: 'timer', zap: 'bolt', code: 'code', monitor: 'desktop_windows', phone: 'smartphone', app: 'apps',
+  eye: 'visibility', 'eye-off': 'visibility_off', grid: 'apps', check: 'check', copy: 'content_copy', terminal: 'terminal', card: 'credit_card', logout: 'logout',
+  refresh: 'refresh', key: 'key', search: 'search', help: 'help', success: 'check_circle', alert: 'warning', chevron: 'keyboard_arrow_right', loader: 'progress_activity',
+  mail: 'mail', book: 'menu_book', store: 'storefront', users: 'groups', globe: 'public', network: 'hub', lock: 'lock', pause: 'pause', play: 'play_arrow', plus: 'add',
+  sidebar: 'view_sidebar', overview: 'space_dashboard', sliders: 'tune', test: 'science', receipt: 'receipt_long', webhook: 'webhook', settings: 'settings', logs: 'article', wallet: 'account_balance_wallet',
+  trend: 'query_stats', download: 'download', calendar: 'calendar_month', down: 'expand_more', back: 'keyboard_arrow_left', more: 'more_horiz', bell: 'notifications', checks: 'task_alt', copied: 'library_add_check', incoming: 'arrow_downward',
+  circle: 'radio_button_unchecked', user: 'account_circle', file: 'description'
+}
+const glyph = computed(()=>glyphs[props.name] || 'code')
 </script>
-<template><component :is="icons[name] || Code2" :size="size" :stroke-width="1.65" aria-hidden="true" /></template>
+<template><svg class="bypay-icon" :width="size" :height="size" viewBox="0 0 24 24" aria-hidden="true"><path v-if="name === 'logout'" d="M10.09 15.59 11.5 17l5-5-5-5-1.41 1.41L12.67 11H3v2h9.67zM19 3H5c-1.1 0-2 .9-2 2v4h2V5h14v14H5v-4H3v4c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z"/><text v-else class="material-glyph" x="12" y="12" text-anchor="middle" dominant-baseline="central">{{ glyph }}</text></svg></template>

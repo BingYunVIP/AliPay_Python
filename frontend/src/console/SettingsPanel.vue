@@ -10,14 +10,16 @@ const sections = {
   policy: defineAsyncComponent(() => import('./PolicySettings.vue')),
   mail: defineAsyncComponent(() => import('./MailSettings.vue')),
   human: defineAsyncComponent(() => import('./TurnstileSettings.vue')),
+  crypto: defineAsyncComponent(() => import('./CryptoPolicyPanel.vue')),
+  nodes: defineAsyncComponent(() => import('./CryptoNetworkPanel.vue')),
   tasks: defineAsyncComponent(() => import('./TaskSettings.vue')),
 }
 const items = computed(() => [{ id: 'site', label: t('站点与订单', 'Site & orders') }, { id: 'policy', label: t('商户与资金规则', 'Merchants & funds') }, { id: 'mail', label: t('邮箱与模板', 'Email & templates') },
-  { id: 'human', label: t('人机验证', 'Human check') }, { id: 'tasks', label: t('计划任务', 'Scheduled tasks') }])
+  { id: 'human', label: t('人机验证', 'Human check') }, {id:'crypto',label:'Crypto 参数'},{id:'nodes',label:'区块节点'}, { id: 'tasks', label: t('计划任务', 'Scheduled tasks') }])
 // The open section lives in the address, so a section can be linked to and survives a reload
 const section = computed({
-  get: () => items.value.some(item => item.id === route.query.section) ? route.query.section : 'site',
-  set: id => router.replace({ query: { ...route.query, section: id } }),
+  get: () => items.value.some(item => item.id === route.params.section) ? route.params.section : 'site',
+  set: id => router.replace({ path: `/admin/settings/${id}` }),
 })
 </script>
 <template>

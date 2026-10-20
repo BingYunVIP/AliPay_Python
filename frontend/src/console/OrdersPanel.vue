@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { api, auth, t } from '../state'
+import { api, auth, isAdmin, t } from '../state'
 import { usePaged } from './useConsole'
 import { amount, fullDate, productName, status } from './format'
 import Icon from '../components/Icon.vue'
@@ -17,7 +17,7 @@ const search = ref(String(route.query.q || '')), searchValue = ref(search.value)
 const merchant = ref(String(route.query.merchant || ''))
 const state = ref('all'), channel = ref('all'), product = ref('all'), deleted = ref('0'), period = ref('all')
 const selected = ref(new Set()), selecting = ref(false), exporting = ref(false), confirming = ref(false), acting = ref(false)
-const channelNames = computed(() => ({ alipay: t('支付宝', 'Alipay'), wechat: t('微信支付', 'WeChat Pay'), paypal: 'PayPal', stripe: 'Stripe' }))
+const channelNames = computed(() => ({ alipay: t('支付宝', 'Alipay'), wechat: t('微信支付', 'WeChat Pay'), paypal: 'PayPal', stripe: 'Stripe',crypto:'Crypto' }))
 const rows = usePaged('/api/console/orders', 'orders', () => ({ search: search.value, merchant: merchant.value, status: state.value, period: period.value, channel: channel.value, product: product.value, deleted: deleted.value }), c)
 const filters = computed(() => new URLSearchParams({ search: search.value, merchant: merchant.value, status: state.value, period: period.value, channel: channel.value, product: product.value, deleted: deleted.value }).toString())
 const count = computed(() => selected.value.size)
@@ -78,7 +78,7 @@ async function exportSelected() {
   <div class="console-page-heading"><div><h2>{{ t('订单记录', 'Orders') }}</h2><p>{{ t('查询交易状态，追踪每一笔收款', 'Track your payments and inspect each transaction') }}</p></div><button class="button" @click="c.navigate('testpay')"><Icon name="plus" :size="16" />{{ t('创建订单', 'Create order') }}</button></div>
   <section class="hig-card orders-card">
     <div class="table-toolbar">
-      <select v-model="state" class="order-filter-select" :aria-label="t('交易状态', 'Payment status')"><option v-for="value in ['all', 'CREATED', 'PAID', 'EXPIRED', 'CLOSED', 'REFUNDING', 'PARTIALLY_REFUNDED', 'REFUNDED']" :key="value" :value="value">{{ value === 'all' ? t('全部状态', 'All statuses') : status(value) }}</option></select>
+      <select v-model="state" class="order-filter-select" :aria-label="t('交易状态', 'Payment status')"><option v-for="value in ['all', 'CREATED', 'CONFIRMING', 'PAID', 'EXPIRED', 'CLOSED', 'REFUNDING', 'PARTIALLY_REFUNDED', 'REFUNDED']" :key="value" :value="value">{{ value === 'all' ? t('全部状态', 'All statuses') : status(value) }}</option></select>
       <select v-model="channel" class="order-filter-select" :aria-label="t('收款渠道筛选', 'Filter by channel')"><option value="all">{{ t('全部渠道', 'All channels') }}</option><option v-for="(name, key) in channelNames" :key="key" :value="key">{{ name }}</option></select>
       <select v-model="product" class="order-filter-select" :aria-label="t('支付场景筛选', 'Filter by product')"><option value="all">{{ t('全部场景', 'All products') }}</option><option v-for="p in ['page', 'wap', 'app', 'mini']" :key="p" :value="p">{{ productName(p) }}</option></select>
       <select v-model="deleted" class="order-filter-select" :aria-label="t('订单列表范围', 'Order list scope')"><option value="0">{{ t('正常订单', 'Active orders') }}</option><option value="1">{{ t('已删除', 'Deleted') }}</option></select>
@@ -98,16 +98,16 @@ async function exportSelected() {
       <table class="console-table orders-table">
         <thead><tr>
           <th class="check-cell"><input type="checkbox" :aria-label="t('选择本页订单', 'Select orders on this page')" :checked="pageSelected" :indeterminate.prop="pageSome" @change="togglePage($event.target.checked)" /></th>
-          <th>{{ t('商户 ID / 邮箱', 'Merchant / Email') }}</th><th>{{ t('商品 / 订单号', 'Item / Order') }}</th><th>{{ t('渠道 / 产品', 'Channel / Product') }}</th><th>{{ t('实付金额', 'Amount') }}</th><th>{{ t('手续费', 'Fee') }}</th><th>{{ t('交易状态', 'Status') }}</th><th>{{ t('创建时间', 'Created at') }}</th><th>{{ t('支付时间', 'Paid at') }}</th><th>{{ t('用户IP', 'Client IP') }}</th><th class="align-right"><span class="action-head">{{ t('操作', 'Actions') }}</span></th>
+          <th v-if="isAdmin">{{ t('商户 ID / 邮箱', 'Merchant / Email') }}</th><th>{{ t('商品 / 订单号', 'Item / Order') }}</th><th>{{ t('渠道 / 产品', 'Channel / Product') }}</th><th>{{ t('订单金额','Order amount') }}</th><th>{{ t('支付金额','Payment amount') }}</th><th v-if="isAdmin">{{ t('固定汇率','Fixed rate') }}</th><th v-if="isAdmin"><span class="rate-column-title">{{ t('自动汇率','Market rate') }}<button type="button" class="rate-info" aria-label="自动汇率说明：创建时快照，不随后续行情变化" title="订单创建时的自动行情快照，后续行情不会修改本订单；固定报价存在时优先用于计算支付金额"><Icon name="info" :size="15"/></button></span></th><th>{{ t('手续费', 'Fee') }}</th><th>{{ t('实际收入','Net income') }}</th><th>{{ t('交易状态', 'Status') }}</th><th>{{ t('创建时间', 'Created at') }}</th><th>{{ t('支付时间', 'Paid at') }}</th><th>{{ t('用户IP', 'Client IP') }}</th><th class="align-right"><span class="action-head">{{ t('操作', 'Actions') }}</span></th>
         </tr></thead>
         <tbody>
           <tr v-for="order in rows.data.value" :key="order.out_trade_no">
             <td class="check-cell"><input type="checkbox" :aria-label="t(`选择订单 ${order.out_trade_no}`, `Select order ${order.out_trade_no}`)" :checked="selected.has(order.out_trade_no)" @change="toggle(order.out_trade_no)" /></td>
-            <td><code>{{ order.merchant_id || '—' }}</code><small class="ellipsis">{{ order.merchant_email || '—' }}</small></td>
-            <td><button type="button" class="order-name" @click="c.selectedOrder.value = order">{{ order.subject }}</button><code>{{ order.out_trade_no }}</code></td>
-            <td><span class="table-channel"><span class="brand-small" :class="order.channel"><Brand :name="order.channel" /></span>{{ order.config_name || channelNames[order.channel] }}</span><small>{{ productName(order.product) }}</small></td>
-            <td class="numeric strong">¥ {{ order.amount }}</td>
-            <td class="numeric">¥ {{ amount(order.fee_cents) }}</td>
+            <td v-if="isAdmin"><code>{{ order.merchant_id || '—' }}</code><small class="ellipsis">{{ order.merchant_email || '—' }}</small></td>
+            <td><button type="button" class="order-name" @click="c.selectedOrder.value = order">{{ order.subject }}</button><code>{{ order.merchant_order_no || order.out_trade_no }}</code></td>
+            <td><span class="table-channel"><span class="brand-small" :class="order.channel"><Brand :name="order.channel" /></span>{{ channelNames[order.channel] }}</span><small>{{ order.channel==='crypto'?`${order.crypto_network} / ${order.crypto_asset}`:productName(order.product) }}</small></td>
+            <td class="numeric">{{ order.order_amount }} <span class="currency-tag">CNY</span></td><td class="numeric strong">{{ order.payment_amount }} <span class="currency-tag">{{order.payment_currency}}</span></td><td v-if="isAdmin" class="numeric">{{order.fixed_rate_snapshot||'−'}}</td><td v-if="isAdmin" class="numeric">{{order.market_rate_snapshot||'−'}}</td>
+            <td class="numeric">{{ order.fee_cny }} CNY</td><td class="numeric">{{order.net_income_cny===null?'−':`${order.net_income_cny} CNY`}}</td>
             <td><span class="state-badge" :class="order.status"><i></i>{{ status(order.status) }}</span></td>
             <td class="date-cell">{{ fullDate(order.created_at) }}</td>
             <td class="date-cell">{{ fullDate(order.paid_at) }}</td>
@@ -122,3 +122,5 @@ async function exportSelected() {
   </section>
   <ConfirmDialog :open="confirming" :busy="acting" :destructive="deleted !== '1'" :title="deleted === '1' ? t('批量恢复订单', 'Restore selected orders') : t('批量删除订单', 'Delete selected orders')" :description="t(`将处理 ${count} 笔订单，账务与回调记录保留，退款中的订单会跳过`, `${count} orders will be processed. Accounting and callback records are kept; refunding orders are skipped`)" :label="deleted === '1' ? t('确认恢复', 'Restore') : t('确认删除', 'Delete')" @cancel="confirming = false" @confirm="remove" />
 </template>
+
+<style scoped>.currency-tag{display:inline-flex;align-items:center;border-radius:5px;background:var(--soft);padding:2px 5px;font-size:10px;font-weight:600}.rate-column-title{display:inline-flex;align-items:center;gap:5px}.rate-info{position:relative;display:inline-flex;align-items:center;justify-content:center;border:0;background:none;color:var(--muted);padding:4px;cursor:help}</style>

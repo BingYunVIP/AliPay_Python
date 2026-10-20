@@ -23,12 +23,13 @@ from bypay.constants import GATEWAY_BY_ENV
 from bypay.payment_validation import money
 from .store import Store, digest, present_order
 from .trace import create_trace
-from .webhooks import WebhookSigner, validate_callback, local_callback_origins
+from .webhooks import WebhookSigner, validate_callback
 from .console import install_console
 from .channels import ChannelError, ChannelStore, FIELDS, INTEGRATED, REQUIRED as REQUIRED_FIELDS
 from .reconcile import Reconciler, yuan
 from .settings import SiteSettings, SettingsError, email_allowed
 from .refunds import Refunds, RefundError
+from .crypto import CryptoGateway, CryptoNetworks, CryptoError, ASSETS
 
 ROOT = Path(__file__).resolve().parent.parent
 # Domain-ownership files (WeChat MP_verify_xxx.txt and the like) are served from the site root out of one folder, by exact name
@@ -42,46 +43,21 @@ class ApiError(Exception):
 
 
 def payment_config(config):
-    def key(name):
-        path = config.get(name + "_FILE", "")
-        return Path(path).read_text().strip() if path else config.get(name, "").replace("\\n", "\n")
-    env = config.get("ALIPAY_ENV", "sandbox")
-    if env not in GATEWAY_BY_ENV:
-        raise ValueError("ALIPAY_ENV must be sandbox or production")
-    origin = config["PUBLIC_BASE_URL"].rstrip("/")
-    parsed = urlsplit(origin)
-    if parsed.path or parsed.query or parsed.fragment or parsed.username or not parsed.hostname:
-        raise ValueError("PUBLIC_BASE_URL must be an origin without a path")
-    local = parsed.hostname in {"localhost", "127.0.0.1", "[::1]", "::1"}
-    if parsed.scheme != "https" and not (parsed.scheme == "http" and (local or config.get("BYPAY_ALLOW_HTTP") == "1")):
-        raise ValueError("PUBLIC_BASE_URL requires HTTPS outside localhost")
-    # Keep the legacy variable working while new deployments use a neutral name.
-    notify_url = config.get("BYPAY_NOTIFY_URL")
-    if notify_url is None:
-        notify_url = config.get("ALIPAY_NOTIFY_URL")
-    if notify_url is None:
-        notify_url = "" if local or parsed.scheme != "https" else origin + "/payments/notify"
-    if notify_url:
-        notification = urlsplit(notify_url)
-        # Normalize the former route so upgrades keep accepting existing environment files.
-        if notification.path == "/alipay/notify":
-            notify_url = notification._replace(path="/payments/notify").geturl()
-            notification = urlsplit(notify_url)
-        if notification.scheme != "https" or not notification.hostname or notification.hostname in {"localhost", "127.0.0.1", "::1"} or notification.username or notification.password or notification.query or notification.fragment or notification.path != "/payments/notify":
-            raise ValueError("ALIPAY_NOTIFY_URL 必须是指向本服务的公网 HTTPS 地址，路径为 /payments/notify")
-    return {"env": env, "app_id": config.get("ALIPAY_APP_ID", ""),
-            "seller_id": config.get("ALIPAY_SELLER_ID", ""),
-            "app_private_key": key("ALIPAY_PRIVATE_KEY"),
-            "alipay_public_key": key("ALIPAY_PUBLIC_KEY"),
-            "gateway": GATEWAY_BY_ENV[env], "sign_type": "RSA2", "charset": "utf-8",
-            "notify_url": notify_url, "return_url": origin + "/payment/return"}
+    origin=config['PUBLIC_BASE_URL'].rstrip('/')
+    parsed=urlsplit(origin)
+    local=parsed.hostname in {'localhost','127.0.0.1','::1'}
+    if parsed.path or parsed.query or parsed.fragment or parsed.username or not parsed.hostname or (parsed.scheme!='https' and not (parsed.scheme=='http' and local)):
+        raise ValueError('PUBLIC_BASE_URL must be a local HTTP or public HTTPS origin')
+    return {'env':'production','app_id':'','seller_id':'','app_private_key':'','alipay_public_key':'',
+            'gateway':GATEWAY_BY_ENV['production'],'sign_type':'RSA2','charset':'utf-8',
+            'notify_url':'' if local else origin+'/payments/notify','return_url':origin+'/payment/return'}
 
 
 def create_app(settings=None):
     app = Flask(__name__, static_folder=None)
     app.config.update(PUBLIC_BASE_URL="https://pay.bingyun.vip", DATABASE=str(ROOT / "data/web.sqlite3"),
-                      ALLOW_REGISTRATION="true", TEST_MAX_AMOUNT="3000.00", MAX_CONTENT_LENGTH=32768,
-                      MAX_FORM_MEMORY_SIZE=32768, MAX_FORM_PARTS=64, FRONTEND_DIST=str(ROOT / "frontend/dist"),
+                      ALLOW_REGISTRATION="false", TEST_MAX_AMOUNT="3000.00", MAX_CONTENT_LENGTH=32768,
+                      MAX_FORM_MEMORY_SIZE=32768, MAX_FORM_PARTS=64, FRONTEND_DIST=os.environ.get('BYPAY_FRONTEND_DIST', str(ROOT / "frontend/dist")),
                       VERIFICATION_DIR=str(ROOT / "verification"))
     app.config.update({k: v for k, v in os.environ.items() if k.startswith(("ALIPAY_", "BYPAY_")) or k in {"PUBLIC_BASE_URL", "ALLOW_REGISTRATION", "TEST_MAX_AMOUNT", "DATABASE"}})
     app.config.update(settings or {})
@@ -91,20 +67,32 @@ def create_app(settings=None):
     site = SiteSettings(store, app.config, base_cfg)
     channels = ChannelStore(store, base_cfg, site.urls)
     def current_config():
-        if not has_request_context(): return channels.payment_config()
+        if not has_request_context():
+            try:return channels.payment_config()
+            except ChannelError:return {**base_cfg,"config_enabled":False}
         if not hasattr(g, "payment_config"):
-            g.payment_config = channels.payment_config()
+            try:g.payment_config = channels.payment_config()
+            except ChannelError:g.payment_config={**base_cfg,'config_enabled':False}
         return g.payment_config
     cfg = LocalProxy(current_config)
     trace = create_trace(store, app.config.get("BYPAY_LOG_FILE", str(Path(app.config["DATABASE"]).parent / "logs/payment.jsonl")))
     signer = WebhookSigner(Path(app.config["DATABASE"]).parent / "webhook-signing.pem")
     callback_hosts = LocalProxy(lambda: set(site.read()["callback_hosts"]) | (app.extensions["operations"].callback_hosts() if "operations" in app.extensions else set()))
-    callback_local = LocalProxy(lambda: local_callback_origins(site.read()["origin"], app.config.get("BYPAY_LOCAL_CALLBACK_PORT", 8100)))
-    store.bootstrap(app.config.get("BYPAY_ADMIN_EMAIL"), app.config.get("BYPAY_ADMIN_PASSWORD"))
-    app.extensions.update(store=store, alipay_config=base_cfg, channels=channels, site_settings=site, webhook_signer=signer, trace=trace, callback_hosts=callback_hosts, callback_local_origins=callback_local)
+    store.bootstrap()
+    app.extensions.update(store=store, alipay_config=base_cfg, channels=channels, site_settings=site, webhook_signer=signer, trace=trace, callback_hosts=callback_hosts)
     from .merchants import Merchants
     merchants = Merchants(store, site)
     app.extensions["merchants"] = merchants
+    crypto_networks = CryptoNetworks(store, merchants.cipher)
+    app.extensions["crypto_networks"] = crypto_networks
+    from .pricing import Pricing
+    from .crypto_policy import CryptoPolicy
+    pricing=Pricing(store,merchants.cipher,app.config.get('BYPAY_MARKET_PROXY_URL',''))
+    crypto_policy=CryptoPolicy(store,site)
+    store.pricing=pricing
+    store.crypto_policy=crypto_policy
+    app.extensions.update(pricing=pricing,crypto_policy=crypto_policy)
+
     from .mailing import Mailer,email_address
     from .operations import Operations
     from .antibot import AntiBot
@@ -132,9 +120,6 @@ def create_app(settings=None):
         browser_origins.update(value for value in app.config.get("BYPAY_BROWSER_ORIGINS", "").split(",") if value)
     if app.config.get("BYPAY_RUN_MODE") == "managed" and app.config.get("BYPAY_ALLOW_HTTP") == "1":
         browser_origins.update(value for value in app.config.get("BYPAY_BROWSER_ORIGINS", "").split(",") if value)
-    if app.config.get("BYPAY_TRUST_PROXY") == "1":
-        from werkzeug.middleware.proxy_fix import ProxyFix
-        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
 
     def ready(config=None):
         active = config if config is not None else cfg
@@ -144,18 +129,18 @@ def create_app(settings=None):
         active = config if config is not None else dict(cfg)
         if not ready(active):
             raise ApiError("payment_not_configured", 503)
-        return app.config.get("ALIPAY_CLIENT_FACTORY", AlipayClient)(active)
+        return AlipayClient(active)
 
     def wechat_client(config):
         if not wechat_ready(config):
             raise ApiError("payment_not_configured", 503)
         try:
-            return app.config.get("WECHAT_CLIENT_FACTORY", WechatClient)(config)
+            return WechatClient(config)
         except WechatError as exc:
             raise ApiError(exc.code, 503) from None
 
-    alipay_factory = lambda active: app.config.get("ALIPAY_CLIENT_FACTORY", AlipayClient)(active)
-    wechat_factory = lambda active: app.config.get("WECHAT_CLIENT_FACTORY", WechatClient)(active)
+    alipay_factory = AlipayClient
+    wechat_factory = lambda active: WechatClient(active)
 
     def close_provider_order(order):
         try:
@@ -183,6 +168,10 @@ def create_app(settings=None):
     app.extensions["merchant_close_provider"] = close_provider_order
     reconciler = Reconciler(store, channels, trace, alipay_factory, wechat_factory)
     app.extensions["reconciler"] = reconciler
+    app.extensions["crypto_gateway"] = CryptoGateway(store, crypto_networks, pricing.quote)
+    store.crypto_networks=crypto_networks
+    from .crypto_scanner import CryptoScanner
+    app.extensions["crypto_scanner"] = CryptoScanner(store, channels, crypto_networks, trace)
     refunds = Refunds(store, channels, trace, alipay_factory, wechat_factory)
     app.extensions["refunds"] = refunds
 
@@ -212,6 +201,8 @@ def create_app(settings=None):
                 g.user = store.authenticate(token, api=is_api) if token else None
                 if not g.user or (session_only and is_api):
                     raise ApiError("unauthorized", 401)
+                if g.user.get('must_change_credentials') and request.path not in {'/api/auth/me','/api/auth/initial-credentials','/api/auth/logout'}:
+                    raise ApiError('credentials_change_required',403)
                 if admin and g.user["role"] != "admin":
                     raise ApiError("forbidden", 403)
                 if request.method != "GET":
@@ -225,10 +216,10 @@ def create_app(settings=None):
         return decorator
 
     def user_info(user):
-        return {k: user[k] for k in ("id", "email", "role")}
+        return {**{k: user[k] for k in ("id", "email", "role")}, "must_change_credentials":bool(user.get("must_change_credentials",False))}
 
     def public_order(order):
-        return present_order(order)
+        return present_order(order,admin=getattr(g,'user',{}).get('role')=='admin')
 
     def owned_order(number, include_deleted=False):
         order = store.order(number)
@@ -353,9 +344,8 @@ def create_app(settings=None):
                 if mailer.config()['registration_code']:mailer.consume_code(email,payload.get('email_code',''))
             except ValueError as exc:raise ApiError(str(exc)) from None
             try:
-                user = store.register(email, password)
+                user = store.register(email, password, inviter=inviter)
                 merchants.ensure(user["id"])
-                operations.ensure(user['id'],new=True,inviter=inviter)
                 if mailer.config()['notify_registration']:mailer.enqueue('registration',email,{'message':'账户已创建，请登录控制台查看商户接入状态'},'registration:'+str(user['id']))
             except sqlite3.IntegrityError:
                 raise ApiError("email_unavailable", 409)
@@ -377,7 +367,36 @@ def create_app(settings=None):
     @app.get("/api/auth/me")
     @auth(session_only=True)
     def me():
+        if g.user.get('must_change_credentials'):
+            return jsonify(user=user_info(g.user),csrf_token=g.user['csrf'])
         return jsonify(user=user_info(g.user), csrf_token=g.user["csrf"], api_key=store.key_info(g.user["id"]), access=operations.access(g.user["id"]))
+
+    @app.post('/api/auth/initial-credentials')
+    @auth(session_only=True,admin=True)
+    def initial_credentials():
+        if not g.user.get('must_change_credentials'):raise ApiError('credentials_already_updated',409)
+        payload=json_body()
+        email=str(payload.get('email','')).strip().lower()
+        password=payload.get('password','');current=payload.get('current_password','')
+        if not isinstance(payload.get('password_confirmation'),str) or password!=payload['password_confirmation']:
+            raise ApiError('password_confirmation_mismatch')
+        from .security import validate_admin_identity
+        try:validate_admin_identity(email,password)
+        except ValueError as exc:raise ApiError(str(exc)) from None
+        old=store.user_by_email(g.user['email'])
+        if not isinstance(current,str) or not check_password_hash(old['password'],current):raise ApiError('invalid_credentials',401)
+        encoded=generate_password_hash(password)
+        try:
+            with store.connect() as db:
+                db.execute('BEGIN IMMEDIATE')
+                changed=db.execute('UPDATE users SET email=?,password=?,must_change_credentials=0 WHERE id=? AND must_change_credentials=1 AND password=?',(email,encoded,g.user['id'],old['password'])).rowcount
+                if changed!=1:raise ApiError('credentials_conflict',409)
+                db.execute('DELETE FROM sessions WHERE user_id=?',(g.user['id'],))
+        except sqlite3.IntegrityError:raise ApiError('email_unavailable',409) from None
+        trace('account.security','admin_credentials_initialized',{'email':email},user_id=g.user['id'])
+        response=jsonify(updated=True,reauthenticate=True)
+        response.delete_cookie(cookie_name,path='/')
+        return response
 
     @app.post("/api/auth/logout")
     @auth(session_only=True)
@@ -425,6 +444,7 @@ def create_app(settings=None):
     @auth(session_only=True)
     def refund_payment(number):
         owned_order(number)
+        if store.order(number)['channel']=='crypto':raise ApiError('crypto_refund_admin_only',403)
         if g.user['role']!='admin' and not operations.rules.read()['merchant_refund']:raise ApiError('merchant_refund_disabled',403)
         payload = json_body()
         refund_no, reason = payload.get("refund_no"), payload.get("reason", "订单退款")
@@ -444,6 +464,39 @@ def create_app(settings=None):
         record=refunds.sync(order["active_refund_no"]) if order["active_refund_no"] else None
         return jsonify(refund=record,order=public_order(store.order(number)))
 
+    @app.post('/api/admin/orders/<number>/crypto-refunds')
+    @auth(session_only=True,admin=True)
+    def start_crypto_refund(number):
+        order=owned_order(number)
+        if order["channel"]!="crypto":raise ApiError("invalid_crypto_refund")
+        payload=json_body()
+        if set(payload)!={'refund_no','amount','reason','refund_to'}:raise ApiError('invalid_crypto_refund')
+        refund_no,reason=payload.get('refund_no'),payload.get('reason')
+        if not isinstance(refund_no,str) or not re.fullmatch(r'[A-Za-z0-9_-]{8,64}',refund_no):raise ApiError('invalid_refund_number')
+        if not isinstance(reason,str) or not reason.strip() or len(reason)>128 or any(ord(c)<32 for c in reason):raise ApiError('invalid_refund_reason')
+        try:record=refunds.start(number,refund_no,money(payload.get('amount')),reason.strip(),g.user['id'],payload['refund_to'])
+        except (RefundError,ValueError) as exc:raise ApiError(str(exc)) from None
+        return jsonify(refund=record),202
+
+    @app.post('/api/admin/orders/<number>/crypto-refunds/<refund_no>/record')
+    @auth(session_only=True,admin=True)
+    def record_crypto_refund(number,refund_no):
+        payload=json_body()
+        if set(payload)!={'transfer_sent','txid'} or payload.get('transfer_sent') is not True:raise ApiError('crypto_refund_transfer_confirmation_required')
+        try:record=refunds.record_crypto_transfer(number,refund_no,payload,g.user['id'])
+        except (RefundError,ValueError) as exc:raise ApiError(str(exc)) from None
+        return jsonify(refund=record,order=public_order(store.order(number)))
+
+    @app.post('/api/admin/orders/<number>/crypto-refunds/<refund_no>/cancel')
+    @auth(session_only=True,admin=True)
+    def cancel_crypto_refund(number,refund_no):
+        payload=json_body()
+        if set(payload)!={'transfer_not_sent'} or payload.get('transfer_not_sent') is not True:
+            raise ApiError('crypto_refund_cancel_confirmation_required')
+        try:record=refunds.cancel_crypto_reservation(number,refund_no,g.user['id'])
+        except (RefundError,ValueError) as exc:raise ApiError(str(exc)) from None
+        return jsonify(refund=record,order=public_order(store.order(number)))
+
     @app.get("/api/v1/payments/<number>/qr.svg")
     @auth()
     def payment_qr(number):
@@ -451,7 +504,7 @@ def create_app(settings=None):
         order = owned_order(number)
         limit("qr:" + str(g.user["id"]), 60)
         if not (order["pay_url"] or order["cashier_qr"]): raise ApiError("qr_not_available", 422)
-        if order["status"] != "CREATED" or order["expires_at"] <= int(time.time()): raise ApiError("payment_order_expired", 409)
+        if order["status"] not in {"CREATED","CONFIRMING"} or order["expires_at"] <= int(time.time()): raise ApiError("payment_order_expired", 409)
         if order["product"] == "wap":
             # The signed URL is ~1000 characters: its QR is a 160-module grid that cannot hold a logo or be
             # scanned at card size. Encode a short redirect on the configured site address instead (a phone
@@ -459,8 +512,9 @@ def create_app(settings=None):
             value = site.read()["origin"] + "/m/" + store.short_link(number)
         else:
             value = order["cashier_qr"] or order["pay_url"]
+        payment_payload=json.loads(order.get("payment_payload") or "{}")
         try:
-            svg = payment_qr_svg(value, order["channel"])
+            svg = payment_qr_svg(value, order["channel"], payment_payload.get("asset","")) if order["channel"]=="crypto" else payment_qr_svg(value, order["channel"])
         except ValueError:
             raise ApiError("qr_not_available", 422)
         return Response(svg, mimetype="image/svg+xml")
@@ -550,6 +604,7 @@ def create_app(settings=None):
         if payload.get("refresh"):
             order = reconciler.sync(number, "qr_refresh")["order"]
             if order["status"] != "CREATED": return jsonify(order=public_order(order))
+        if order["channel"] == "crypto":return qr_response(store.order(number))
         if order["channel"] == "wechat":
             return jsonify(order=public_order(store.order(number)))  # a WeChat Native code stays valid for the whole payment window
         browser_origin = request.headers.get("Origin", origin)
@@ -588,7 +643,7 @@ def create_app(settings=None):
         if not isinstance(subject, str) or not subject.strip() or len(subject) > 128 or any(ord(c) < 32 for c in subject):
             raise ApiError("invalid_subject")
         channel = payload.get("channel", "alipay")
-        if channel not in INTEGRATED or payload.get("product", "page") not in {"page", "wap", "app", "mini"}:
+        if channel not in INTEGRATED | {"crypto"} or payload.get("product", "page") not in {"page", "wap", "app", "mini"}:
             raise ApiError("unsupported_product", 422)
         if channel == "wechat" and len(number) > 32: raise ApiError("wechat_order_number_too_long")  # WeChat Pay accepts 6 to 32 characters
         buyer = {k: payload[k] for k in ("buyer_id", "buyer_open_id") if k in payload}
@@ -606,7 +661,7 @@ def create_app(settings=None):
             raise ApiError("invalid_merchant_callback")
         if notify_url:
             try:
-                validate_callback(notify_url, callback_hosts, callback_local)
+                validate_callback(notify_url, callback_hosts)
             except ValueError:
                 raise ApiError("invalid_merchant_callback")
         try:
@@ -621,13 +676,20 @@ def create_app(settings=None):
             merchant_settings = saved_settings["settings"]
             if Decimal(amount) < Decimal(merchant_settings["minimum_amount"]): raise ApiError("merchant_amount_below_minimum")
             if Decimal(amount) > Decimal(merchant_settings["maximum_amount"]): raise ApiError("merchant_amount_above_maximum")
+        merchant_request=bool(payload.get("merchant_order"))
+        requested_crypto_asset=payload.get("crypto_asset")
         payload = {"out_trade_no": number, "subject": subject.strip(), "amount": amount, "product": payload.get("product", "page"), "notify_url": notify_url}
-        if channel != "alipay": payload["channel"] = channel  # Alipay requests keep their original hash, so old orders still replay
+        if channel == "crypto" and requested_crypto_asset is not None:
+            payload["crypto_asset"]=requested_crypto_asset
+            if not isinstance(payload.get("crypto_asset"), str) or not re.fullmatch(r"[A-Za-z0-9_-]{3,32}", payload["crypto_asset"]):
+                raise ApiError("invalid_crypto_asset")
+            payload["crypto_asset"] = payload["crypto_asset"].upper()
+        payload["channel"] = channel
         request_hash = digest(json.dumps({**payload, **buyer}, sort_keys=True, separators=(",", ":")))
         existing = store.order(number)
         was_existing = existing is not None
         def matching(order):
-            if order["user_id"] != g.user["id"] or any(order[k] != payload[k] for k in payload) or (order.get("request_hash") and order["request_hash"] != request_hash) or (config_id and config_id != order["payment_config_id"]):
+            if order["user_id"] != g.user["id"] or any(order[k] != payload[k] for k in payload if k != "crypto_asset") or (order.get("request_hash") and order["request_hash"] != request_hash) or (config_id and config_id != order["payment_config_id"]):
                 raise ApiError("order_conflict", 409)
         def replay(order):
             matching(order)
@@ -636,7 +698,9 @@ def create_app(settings=None):
         if existing:
             matching(existing)
             if existing["pay_url"] or json.loads(existing["payment_payload"]) or existing["status"] != "CREATED": return replay(existing)
-        client_ip = operations.rules.client_ip(request)  # 真实访客 IP，写进订单并在订单列表显示
+        if Decimal(amount)<Decimal(site.read()['min_amount']):raise ApiError('amount_below_minimum')
+        connection_ip=operations.rules.client_ip(request)
+        client_ip="" if merchant_request else connection_ip
         if not existing and not internal:
             try:operations.precheck(g.user['id'],payload['subject'],payload['amount'],notify_url,number,client_ip,admin=g.user['role']=='admin')
             except ValueError as exc:raise ApiError(str(exc),403) from None
@@ -648,13 +712,21 @@ def create_app(settings=None):
         if merchant_settings:
             timeout_minutes=int(merchant_settings["timeout_minutes"]) if saved_settings["version"] else policy["order_timeout_minutes"]
             if timeout_minutes>policy["order_timeout_minutes"]: raise ApiError("invalid_merchant_payment_settings")
-            config_id=merchants.select_config(g.user["id"],channel,channels,config_id)
+            config_id=merchants.select_config(g.user["id"],channel,channels,config_id,crypto_asset=payload.get("crypto_asset"))
         order_cfg = channels.payment_config(existing) if existing else channels.pin(channels.payment_config(config_id=config_id, channel=channel))
+        order_cfg["merchant_server_ip"]=connection_ip if merchant_request else ""
         if merchant_settings:
             if saved_settings["version"]:
                 order_cfg["merchant_fee_rate"]=merchant_settings["fee_rate"]
             order_cfg["merchant_settings_version"]=saved_settings["version"]
-        if not existing and not order_cfg["config_enabled"]: raise ApiError("channel_disabled", 403)
+        if not existing and not order_cfg["config_enabled"]:
+            if channel=='crypto' and order_cfg.get('network'):
+                network_state=crypto_networks.get(order_cfg.get('network',''))
+                if not network_state.get('revision') or network_state.get('revision')!=network_state.get('check_version'):
+                    raise ApiError('crypto_network_check_required',403)
+            if not channels.describe(channel, order_cfg.get("payment_config_id"))["configured"]:
+                raise ApiError("payment_not_configured", 503)
+            raise ApiError("channel_disabled", 403)
         timeout_minutes=(timeout_minutes if merchant_settings else policy["order_timeout_minutes"])
         expires_at = existing["expires_at"] if existing else int(time.time()) + timeout_minutes * 60
         if expires_at <= int(time.time()): raise ApiError("payment_order_expired", 409)
@@ -662,6 +734,24 @@ def create_app(settings=None):
             try: merchants.reserve_quota(g.user["id"],number,amount,merchant_settings)
             except ValueError as exc: raise ApiError(str(exc),403) from None
         try:
+            if channel == "crypto":
+                if payload["product"] != "page": raise ApiError("crypto_product_unavailable", 422)
+                gateway=app.extensions["crypto_gateway"]
+                if payload.get("crypto_asset") and payload["crypto_asset"] != f"{order_cfg.get('network','')}_{order_cfg.get('asset','')}".upper():
+                    raise ApiError("crypto_asset_mismatch", 422)
+                try: payment=gateway.create_payment(number, amount, order_cfg, expires_at=expires_at, subject=payload["subject"])
+                except CryptoError as exc: raise ApiError(exc.code, 422) from None
+                order_cfg.update(app_id=payment["asset_code"], seller_id=payment["network"], expires_at=expires_at)
+                if not existing:
+                    try: existing=store.create_crypto_order(g.user["id"],payload,order_cfg,payment,request_hash=request_hash,client_ip=client_ip)
+                    except sqlite3.IntegrityError:
+                        existing=store.order(number); matching(existing)
+                else:
+                    if not json.loads(existing.get("payment_payload") or "{}"):
+                        raise ApiError("payment_creation_pending", 409)
+                    payment = json.loads(existing["payment_payload"])
+                trace("crypto.create","crypto_order_created",{"asset":payment["asset_code"],"network":payment["network"],"configuration":order_cfg["payment_config_id"]},number,g.user["id"])
+                return jsonify(order=public_order(store.order(number))), 200 if was_existing else 201
             if channel == "wechat":
                 return create_wechat(payload, buyer, order_cfg, existing, request_hash, expires_at, replay, matching, was_existing)
             order_cfg.update(expires_at=expires_at, timeout_express=f"{timeout_minutes}m",
@@ -781,7 +871,7 @@ def create_app(settings=None):
         trace("create.received", "request_validated", payload, number, g.user["id"])
         if not existing:
             try:
-                existing = store.create_order(g.user["id"], payload, "", order_cfg, request_hash=request_hash, client_ip=operations.rules.client_ip(request))
+                existing = store.create_order(g.user["id"], payload, "", order_cfg, request_hash=request_hash, client_ip="" if order_cfg.get("merchant_server_ip") else operations.rules.client_ip(request))
             except sqlite3.IntegrityError:
                 existing = store.order(number)
                 matching(existing)
@@ -835,7 +925,6 @@ def create_app(settings=None):
         return f"{link}&redirect_url={quote(redirect, safe='')}"
 
     @app.post("/payments/notify/<number>")
-    @app.post("/wechat/notify/<number>")  # legacy route for in-flight orders
     def wechat_notify(number):
         """WeChat Pay payment notice: verify with the public key, decrypt with the APIv3 key, then apply only a matching, paid order."""
         known = re.fullmatch(r"[A-Za-z0-9_|*-]{6,32}", number) is not None
@@ -874,7 +963,6 @@ def create_app(settings=None):
         return "", 204
 
     @app.post("/payments/notify")
-    @app.post("/alipay/notify")  # legacy route for configured providers
     def notify():
         if request.mimetype != "application/x-www-form-urlencoded" or request.args:
             return "failure", 400, {"Content-Type": "text/plain; charset=utf-8"}
@@ -900,20 +988,10 @@ def create_app(settings=None):
         return "success", 200, {"Content-Type": "text/plain; charset=utf-8"}
 
     @app.get("/payment/return")
-    @app.get("/alipay/return")  # legacy browser-return routes
-    @app.get("/wechat/return")
     def payment_return():
         # Return parameters can locate a receipt but NEVER confirm payment.
         token = request.args.get("state", "")
         order = None if any(len(request.args.getlist(k)) != 1 for k in request.args) else store.return_order(token)
-        if not order and not token and all(len(request.args.getlist(k)) == 1 for k in request.args):
-            # Older checkout links had no state token. Only an authentic Alipay
-            # return may recover their receipt without a login session.
-            legacy = store.order(request.args.get("out_trade_no", ""))
-            if legacy and legacy["channel"] == "alipay":
-                legacy_cfg = channels.payment_config(legacy)
-                if request.args.get("app_id") == legacy["app_id"] and AlipayClient.verify_notify(request.args.to_dict(), legacy_cfg["alipay_public_key"]):
-                    order, token = legacy, store.issue_return_token(legacy["out_trade_no"])
         trace("return.received", "browser_return_is_not_payment_confirmation", {"parameter_names": sorted(request.args)},
               order["out_trade_no"] if order else None, order["user_id"] if order else None)
         return redirect("/payment-return" + ("#state=" + token if order else ""), code=303)
@@ -927,6 +1005,40 @@ def create_app(settings=None):
     @auth(session_only=True)
     def my_events():
         return jsonify(events=store.events(None if g.user["role"] == "admin" else g.user["id"]))
+
+    @app.get('/api/admin/crypto-networks')
+    @auth(session_only=True, admin=True)
+    def crypto_networks_public():
+        networks=[]
+        for item in crypto_networks.public():
+            config=crypto_networks.get(item['network'])
+            networks.append({**item,'rpc_url':config['rpc_url'],'api_key_configured':bool(config.get('api_key')),'api_key':''})
+        return jsonify(networks=networks)
+
+    @app.get('/api/admin/crypto-assets')
+    @auth(session_only=True, admin=True)
+    def crypto_assets_public():
+        from .crypto import asset_registry
+        return jsonify(assets=asset_registry())
+
+    @app.put('/api/admin/crypto-networks/<network>')
+    @auth(session_only=True, admin=True)
+    def crypto_networks_save(network):
+        try:
+            value=crypto_networks.save(network, request.get_json(silent=True))
+            affected=channels.disable_crypto_network(network)
+        except CryptoError as exc: raise ApiError(exc.code, 409 if exc.code.endswith('_conflict') else 400) from None
+        trace('crypto.config','crypto_network_saved',{'network':str(network).upper(),'disabled_configs':affected},user_id=g.user['id'])
+        return jsonify(network=str(network).upper(), config={k:v for k,v in value.items() if k not in {'rpc_url','api_key'}} | {'rpc_configured':bool(value.get('rpc_url')),'api_key_configured':bool(value.get('api_key'))})
+
+    @app.post('/api/admin/crypto-networks/<network>/check')
+    @auth(session_only=True, admin=True)
+    def crypto_networks_check(network):
+        result=crypto_networks.check(network)
+        if not result.get('verified') or result.get('fallback_used'):
+            channels.disable_crypto_network(network)
+        trace('crypto.config','crypto_network_checked',{'network':str(network).upper(),'verified':result.get('verified',False),'provider_code':result.get('provider_code')},user_id=g.user['id'],accepted=result.get('verified') is True)
+        return jsonify(**result)
 
     @app.get("/api/admin/diagnostics")
     @auth(session_only=True, admin=True)
@@ -954,33 +1066,30 @@ def create_app(settings=None):
     @app.post("/api/admin/channel-configs/<int:config_id>/check")
     @auth(session_only=True, admin=True)
     def check_channel_config(config_id):
-        """Online check that creates nothing: WeChat Pay looks up an order number that cannot exist.
-
-        Channels without an online probe are checked against the stored, already validated credentials,
-        so every card in the console answers the same 检查配置 button."""
-        with store.connect() as db: row = db.execute("SELECT channel FROM channel_configs WHERE id=?", (config_id,)).fetchone()
-        if not row: raise ApiError("not_found", 404)
-        if row["channel"] != "wechat":
-            item = next((ch for ch in channels.all() if ch["config_id"] == config_id), None)
-            if not item: raise ApiError("not_found", 404)
-            result = {"authenticated": item["configured"], "verified": item["configured"], "provider_code": "stored_configuration"}
-            trace("console.channel", "channel_checked", {"config_id": config_id, "authenticated": result["authenticated"], "verified": result["verified"], "provider_code": result["provider_code"]}, user_id=g.user["id"], accepted=result["authenticated"])
-            return jsonify(**result)
-        limit("channel-check:" + str(config_id), 6)
-        result = wechat_client(channels.payment_config(config_id=config_id, channel="wechat")).check()
-        trace("console.channel", "channel_checked", {"config_id": config_id, "authenticated": result["authenticated"], "verified": result["verified"], "provider_code": result["provider_code"]}, user_id=g.user["id"], accepted=result["authenticated"])
+        with store.connect() as db:row=db.execute('SELECT channel FROM channel_configs WHERE id=? AND archived_at IS NULL',(config_id,)).fetchone()
+        if not row:raise ApiError('not_found',404)
+        item=channels.describe(row['channel'],config_id)
+        if not item['configured']:return jsonify(verified=False,authenticated=False,provider_code='channel_configuration_incomplete')
+        fields,_,_=channels.get(row['channel'],config_id)
+        result=app.extensions['channel_probe'](row['channel'],fields)
+        channels.mark_checked(row['channel'],config_id,result.get('verified') is True,expected_version=item['version'])
+        trace('console.channel','channel_checked',{'config_id':config_id,'verified':result.get('verified',False)},user_id=g.user['id'])
         return jsonify(**result)
 
     @app.get("/api/admin/channels")
     @auth(session_only=True, admin=True)
     def list_channels():
-        return jsonify(channels=channels.all())
+        items=channels.all()
+        try:page=int(request.args.get('page','1'));size=int(request.args.get('page_size','9'))
+        except ValueError:raise ApiError('invalid_page') from None
+        if not 1<=page<=100000 or size!=9:raise ApiError('invalid_page')
+        return jsonify(channels=items[(page-1)*size:page*size],total=len(items),page=page,page_size=size)
 
     @app.post("/api/admin/channels")
     @auth(session_only=True, admin=True)
     def add_channel():
         payload = json_body()
-        return jsonify(channel=channels.create(payload.get("channel"), payload.get("name"), payload.get("fields", {}), g.user["id"], payload.get("enabled",True))), 201
+        return jsonify(channel=channels.verified_save(payload,g.user['id'],app.extensions['channel_probe'])),201
 
     @app.put("/api/admin/channel-configs/<int:config_id>")
     @auth(session_only=True, admin=True)
@@ -988,15 +1097,9 @@ def create_app(settings=None):
         payload = json_body()
         with store.connect() as db: row = db.execute("SELECT channel FROM channel_configs WHERE id=?", (config_id,)).fetchone()
         if not row: raise ApiError("not_found", 404)
-        return jsonify(channel=channels.save(row["channel"], payload.get("fields", {}), payload.get("version"), g.user["id"], config_id, payload.get("name"), payload.get("enabled"), payload.get("revision")))
-
-    @app.put("/api/admin/channels/<name>")
-    @auth(session_only=True, admin=True)
-    def update_channel(name):
-        payload = json_body()
-        if set(payload) - {"fields", "version"}: raise ApiError("invalid_channel_config")
-        result = channels.save(name, payload.get("fields"), payload.get("version"), g.user["id"])
-        return jsonify(channel=result)
+        if payload.get('fields') or payload.get('name'):
+            return jsonify(channel=channels.verified_save(payload,g.user['id'],app.extensions['channel_probe'],config_id))
+        return jsonify(channel=channels.save(row["channel"], {}, payload.get("version"), g.user["id"], config_id, None, payload.get("enabled"), payload.get("revision")))
 
     @app.get("/", defaults={"path": ""})
     @app.get("/<path:path>")
@@ -1017,7 +1120,7 @@ def create_app(settings=None):
             if not value: raise ApiError("cashier_not_found",404)
             from .epay import frame_origins
             g.cashier_parent = " ".join(frame_origins(value[1]["notify_url"]))
-        elif path not in {"", "login", "register", "dashboard", "payment-return"}:
+        elif not (path in {'','login','register','payment-return'} or re.fullmatch(r'(admin|user)(?:/(?:overview|channels|merchants|groups|testpay|orders|webhook|logs|account|settlements|rates(?:/(?:history|settings))?|settings(?:/(?:site|policy|mail|human|tasks|crypto|nodes))?|security/setup))?',path)):
             raise ApiError("not_found", 404)
         if not (dist / "index.html").exists():
             raise ApiError("frontend_not_built", 503)
@@ -1028,4 +1131,6 @@ def create_app(settings=None):
     from .platform_api import install_platform
     install_platform(app,auth,create_payment_request,ApiError,same_origin)
     install_console(app, store, auth, trace, cfg, ready, ApiError)
+    from .control import install_control
+    install_control(app,auth,trace,ApiError,client,wechat_client)
     return app

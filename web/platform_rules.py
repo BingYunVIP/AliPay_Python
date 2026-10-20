@@ -53,6 +53,7 @@ class PlatformRules:
         return {**DEFAULTS,**(json.loads(row['value']) if row else {})}
     def save(self,updates):
         if not isinstance(updates,dict) or not updates or set(updates)-DEFAULTS.keys():raise ValueError('invalid_policy')
+        if 'registration_review' in updates and updates['registration_review'] is not True:raise ValueError('registration_review_required')
         with self.store.connect() as db:
             db.execute('BEGIN IMMEDIATE');old=self.read(db)
             if type(updates.get('version'))is not int or updates['version']!=old['version']:raise ValueError('settings_conflict')
@@ -82,33 +83,22 @@ class PlatformRules:
             db.execute("INSERT INTO console_settings VALUES ('platform_rules',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(json.dumps(new,ensure_ascii=False),))
         return new
 
-    @staticmethod
-    def _forwarded_ip(request,peer):
-        """本机/内网反代或 Cloudflare 回源时，REMOTE_ADDR 只是代理地址，真实访客在转发头里。"""
-        behind_cloudflare=any(peer in network for network in CLOUDFLARE_NETWORKS)
-        if not (behind_cloudflare or peer.is_loopback or peer.is_private):return str(peer)
-        for header in ('CF-Connecting-IP','X-Real-IP','X-Forwarded-For'):
-            value=request.headers.get(header,'')
-            if not value:continue
-            for item in (part.strip() for part in value.split(',')):
-                try:candidate=ipaddress.ip_address(item)
-                except ValueError:continue
-                if candidate.is_global:return str(candidate)
-        return str(peer)
-
     def client_ip(self,request):
-        rules=self.read();raw=request.environ.get('werkzeug.proxy_fix.orig',{}).get('REMOTE_ADDR',request.environ.get('REMOTE_ADDR',''))
+        rules=self.read()
+        raw=request.environ.get('werkzeug.proxy_fix.orig',{}).get('REMOTE_ADDR',request.environ.get('REMOTE_ADDR',''))
         try:peer=ipaddress.ip_address(raw)
         except ValueError:return ''
-        if rules['ip_source']=='remote':return self._forwarded_ip(request,peer)
-        trusted=[ipaddress.ip_network(v) for v in rules['trusted_proxies']]
-        if not any(peer in net for net in trusted):return str(peer)
-        header={'x_real_ip':'X-Real-IP','x_forwarded_for':'X-Forwarded-For','cf_connecting_ip':'CF-Connecting-IP'}[rules['ip_source']]
-        value=request.headers.get(header,'')
+        trusted=[ipaddress.ip_network(value) for value in rules['trusted_proxies']]
+        if not any(peer in network for network in trusted):return str(peer)
+        if any(peer in network for network in CLOUDFLARE_NETWORKS):
+            try:return str(ipaddress.ip_address(request.headers.get('CF-Connecting-IP','')))
+            except ValueError:return str(peer)
+        value=request.headers.get('X-Forwarded-For','')
+        if len(value)>2048:return str(peer)
         try:
-            if rules['ip_source']=='x_forwarded_for':
-                chain=[ipaddress.ip_address(x.strip()) for x in value.split(',')]+[peer]
-                while len(chain)>1 and any(chain[-1] in net for net in trusted):chain.pop()
-                return str(chain[-1])
-            return str(ipaddress.ip_address(value))
+            parts=[part.strip() for part in value.split(',') if part.strip()]
+            if len(parts)>16:return str(peer)
+            chain=[ipaddress.ip_address(item) for item in parts]+[peer]
+            while len(chain)>1 and any(chain[-1] in network for network in trusted):chain.pop()
+            return str(chain[-1])
         except ValueError:return str(peer)

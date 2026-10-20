@@ -1,33 +1,24 @@
-name: Check temporary Pay site
+name: Check ByPay platform
 on: [pull_request, workflow_dispatch]
 permissions:
   contents: read
 jobs:
-  check:
+  platform:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install -r requirements-web.txt
-      - run: python -m unittest discover -s tests -v
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
           cache: npm
           cache-dependency-path: frontend/package-lock.json
+      - run: pip install -r requirements-test.txt
       - run: npm ci --no-fund && npm run build
         working-directory: frontend
-  merchant-demo:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - run: pip install -r requirements.txt
-        working-directory: merchant-demo
+      - run: python -m compileall -q web bypay tools
+      - run: ruff check --select F821,F822,F823 web bypay tools
+      - run: python tools/check_sql_bindings.py
       - run: python -m unittest discover -s tests -v
-        working-directory: merchant-demo
-      - run: python tools/package_merchant_demo.py --check

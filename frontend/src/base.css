@@ -2,17 +2,17 @@
 @font-face { font-family: 'HarmonyOS Sans'; src: url('/fonts/HarmonyOS_Sans.ttf') format('truetype'); font-weight: 100 900; font-display: swap; }
 
 :root {
-  --bg: #f5f6f8; --card: #fff; --soft: #f8f9fb; --fill: #eceff4;
+  --bg: #f6f3ed; --card: #fffdf9; --soft: #f0ece5; --fill: #eae4db;
   --text: #18202c; --muted: #586479; --faint: #66738a; --line: #e0e5ed;
-  --accent: #2563eb; --accent-wash: #eaf1ff; --green: #147e58; --red: #c8354a; --amber: #96611d;
+  --accent: #b85e46; --accent-wash: #f7e8e0; --green: #23765a; --red: #bd3f4d; --amber: #94611f;
   --font: 'HarmonyOS Sans SC', 'HarmonyOS Sans', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Segoe UI', sans-serif;
   --mono: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', monospace;
   color-scheme: light;
 }
 :root.dark {
-  --bg: #0e1116; --card: #171b22; --soft: #1c222c; --fill: #242c38;
+  --bg: #1c1917; --card: #25211e; --soft: #302a26; --fill: #3a322d;
   --text: #eef1f6; --muted: #b4becc; --faint: #96a2b5; --line: #2b3441;
-  --accent: #79a8ff; --accent-wash: #172b49; --green: #67d8ad; --red: #ff8593; --amber: #efbd73;
+  --accent: #e5a58b; --accent-wash: #3b2b24; --green: #67d8ad; --red: #ff8593; --amber: #efbd73;
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
@@ -67,3 +67,8 @@ input::placeholder, textarea::placeholder { color: var(--faint); opacity: 1; }
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
+@font-face { font-family: 'Material Symbols Rounded'; src: url('/fonts/material-symbols-rounded.woff2') format('woff2'); font-style: normal; font-weight: 400; font-display: block; }
+.bypay-icon { display: block; flex: 0 0 auto; fill: currentColor; stroke: none; overflow: visible; }
+.material-glyph { font-family: 'Material Symbols Rounded'; font-size: 24px; font-weight: 400; font-style: normal; line-height: 1; letter-spacing: normal; text-transform: none; direction: ltr; font-feature-settings: 'liga'; -webkit-font-feature-settings: 'liga'; -webkit-font-smoothing: antialiased; user-select: none; stroke: none; fill: currentColor; }
+
+:root:not(.dark){--bg:#f8f5f0;--card:#fffdf9;--soft:#f2ece4;--text:#2c2925;--muted:#746d64;--line:#e7dfd5;--accent:#a65a3d}.bypay-icon{display:inline-block;flex-shrink:0;vertical-align:middle}.button,.button-secondary,.icon-button{align-items:center;justify-content:center}

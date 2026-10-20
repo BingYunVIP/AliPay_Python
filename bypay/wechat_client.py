@@ -137,7 +137,7 @@ class WechatClient:
         if payload:
             headers["Content-Type"] = "application/json"
         try:
-            with httpx.Client(base_url=GATEWAY, transport=self._transport, timeout=httpx.Timeout(10.0, connect=5.0), follow_redirects=False) as http:
+            with httpx.Client(base_url=GATEWAY, transport=self._transport, timeout=httpx.Timeout(10.0, connect=5.0), follow_redirects=False, trust_env=False) as http:
                 response = http.request(method, target, content=payload.encode() or None, headers=headers)
         except httpx.HTTPError as exc:
             logger.error("wechat", "微信支付请求失败", 异常类型=type(exc).__name__, 接口=path)

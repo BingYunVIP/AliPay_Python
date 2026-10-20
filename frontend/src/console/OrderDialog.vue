@@ -1,6 +1,6 @@
 <script setup>
 import { computed, inject, nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { api, errorText, t } from '../state'
+import { api, errorText, isAdmin, t } from '../state'
 import { fullDate, logMessage, productName, status } from './format'
 import Icon from '../components/Icon.vue'
 import PaymentCard from './PaymentCard.vue'
@@ -9,7 +9,7 @@ import PaymentCard from './PaymentCard.vue'
 const c = inject('console')
 const dialog = ref(null), tab = ref('details'), events = ref([]), busy = ref(false), error = ref(''), notice = ref('')
 const order = computed(() => c.selectedOrder.value)
-const channelName = computed(() => ({ alipay: t('支付宝', 'Alipay'), wechat: t('微信支付', 'WeChat Pay'), paypal: 'PayPal', stripe: 'Stripe' })[order.value?.channel] || '')
+const channelName = computed(() => ({ alipay: t('支付宝', 'Alipay'), wechat: t('微信支付', 'WeChat Pay'), paypal: 'PayPal', stripe: 'Stripe', crypto:'Crypto' })[order.value?.channel] || '')
 const tabs = computed(() => [{ id: 'details', label: t('订单详情', 'Order details') }, { id: 'timeline', label: t('订单时间线', 'Order timeline') }])
 let sequence = 0, disposed = false, poll, pressedOutside = false
 
@@ -72,13 +72,28 @@ onBeforeUnmount(() => { disposed = true; sequence++; clearInterval(poll) })
           <div class="fact-grid">
             <div class="fact-row">
               <div class="fact"><span>{{ t('商品名称', 'Item') }}</span><b>{{ order.subject }}</b></div>
-              <div class="fact fact-amount"><b><small>￥</small>{{ order.amount }}</b></div>
+              <div class="fact fact-amount"><span>订单金额</span><b>{{ order.order_amount }} <small>CNY</small></b></div>
               <div class="fact"><span class="state-badge" :class="order.status"><i></i>{{ status(order.status) }}</span></div>
             </div>
             <div class="fact-row">
-              <div class="fact"><span>{{ t('商户订单号', 'Order number') }}</span><code>{{ order.out_trade_no }}</code></div>
+              <div class="fact"><span>支付金额</span><b>{{order.payment_amount}} {{order.payment_currency}}</b></div>
+              <div class="fact"><span>手续费</span><b>{{order.fee_cny}} CNY</b></div>
+              <div class="fact"><span>实际收入</span><b>{{order.net_income_cny===null?'−':`${order.net_income_cny} CNY`}}</b></div>
+            </div>
+            <div v-if="isAdmin" class="fact-row">
+              <div class="fact"><span>商户 ID / 邮箱</span><b>{{order.merchant_id||'−'}} · {{order.merchant_email||'−'}}</b></div>
+              <div class="fact"><span>固定汇率</span><b>{{order.fixed_rate_snapshot||'−'}}</b></div>
+              <div class="fact"><span>自动汇率 <button type="button" class="text-link" title="创建订单时的自动行情快照，不随之后行情变化" aria-label="自动汇率为创建时快照"><Icon name="info" :size="14"/></button></span><b>{{order.market_rate_snapshot||'−'}}</b></div>
+            </div>
+            <div class="fact-row">
+              <div class="fact"><span>{{ t('商户订单号', 'Order number') }}</span><code>{{ order.merchant_order_no || order.out_trade_no }}</code></div>
               <div class="fact"><span>{{ t('支付产品', 'Payment product') }}</span><b>{{ productName(order.product) }}</b></div>
               <div class="fact"><span>{{ t(`${channelName}交易号`, `${channelName} trade number`) }}</span><code>{{ order.trade_no || '—' }}</code></div>
+            </div>
+            <div class="fact-row">
+              <div class="fact"><span>用户 IP</span><code>{{order.client_ip||'−'}}</code></div>
+              <div v-if="isAdmin" class="fact"><span>商户服务器 IP</span><code>{{order.merchant_server_ip||'−'}}</code></div>
+              <div v-if="isAdmin" class="fact"><span>平台订单号</span><code>{{order.out_trade_no}}</code></div>
             </div>
             <div class="fact-row">
               <div class="fact"><span>{{ t('创建时间', 'Created at') }}</span><b>{{ fullDate(order.created_at) }}</b></div>

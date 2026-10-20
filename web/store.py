@@ -13,19 +13,43 @@ from werkzeug.security import generate_password_hash
 
 from bypay.payment_validation import validate_notification
 from .settings import TIMING_DEFAULTS
+from .payment_terms import matches,method_label,two
 
 
 def digest(value):
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-def present_order(order):
+def present_order(order,admin=False):
     result = {k: v for k, v in dict(order).items() if k not in {"app_id", "seller_id", "user_id", "channel_version", "request_hash", "provider_notify_url", "provider_return_url"}}
+    required={'fee_cents','fee_reversed_cents','merchant_order_no'} | ({'merchant_id','merchant_email'} if admin else set())
+    if required-set(result):
+        from flask import current_app,has_app_context
+        if has_app_context():
+            with current_app.extensions['store'].connect() as db:
+                extra=db.execute("SELECT COALESCE(f.fee,0) fee_cents,COALESCE(f.fee_reversed,0) fee_reversed_cents,mo.merchant_no merchant_order_no,m.pid merchant_id,u.email merchant_email FROM orders o LEFT JOIN financial_orders f ON f.number=o.out_trade_no LEFT JOIN merchant_orders mo ON mo.platform_no=o.out_trade_no LEFT JOIN merchant_accounts m ON m.user_id=o.user_id LEFT JOIN users u ON u.id=o.user_id WHERE o.out_trade_no=?",(result['out_trade_no'],)).fetchone()
+                if extra:
+                    for key in required-set(result):result[key]=extra[key]
+    result['merchant_order_no']=result.get('merchant_order_no') or result['out_trade_no']
     result["payment_payload"] = json.loads(result.get("payment_payload") or "{}")
+    result["server_now"]=int(time.time())
+    result["progress_frozen_at"]=result.get("crypto_seen_at") or result.get("paid_at")
     if not result["payment_payload"] and result.get("pay_url"):
         result["payment_payload"] = {"kind": "url", "url": result["pay_url"]}
     result["refundable_amount"] = format(max(Decimal("0"), Decimal(result["amount"]) - Decimal(result.get("refunded_amount", "0"))), ".2f") if result.get("paid_at") else "0.00"
     if result["status"] == "CREATED" and result.get("expires_at", 0) <= int(time.time()): result["status"] = "EXPIRED"
+    result['order_amount']=two(result['amount'])
+    result['order_currency']='CNY'
+    result['payment_amount']=two(result['crypto_amount']) if result['channel']=='crypto' else two(result['amount'])
+    result['payment_currency']=result['crypto_asset'] if result['channel']=='crypto' else 'CNY'
+    result['payment_method']=method_label(result['channel'],result.get('crypto_network',''))
+    fee=int(result.get('fee_cents',0));reversed_fee=int(result.get('fee_reversed_cents',0))
+    result['fee_cny']=two(Decimal(fee-reversed_fee)/100)
+    result['net_income_cny']=two(Decimal(result['amount'])-Decimal(result.get('refunded_amount','0.00'))-Decimal(result['fee_cny'])) if result.get('paid_at') else None
+    hidden={'crypto_rate','crypto_rate_updated_at','crypto_rate_source','crypto_quoted_at'}
+    if not admin:hidden|={'fixed_rate_snapshot','market_rate_snapshot','rate_snapshot_at','merchant_id','merchant_email','merchant_server_ip'}
+    for key in hidden:result.pop(key,None)
+    result['payment_payload']={k:v for k,v in result['payment_payload'].items() if k not in {'rate_cny','rate_updated_at','rate_source','rate_observed_at','fixed_rate_snapshot','market_rate_snapshot','rate_snapshot_at','scan_from','identity'}}
     return result
 
 
@@ -34,85 +58,15 @@ class Store:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         with self.connect() as db:
-            db.executescript("""
-                PRAGMA journal_mode=WAL;
-                CREATE TABLE IF NOT EXISTS users (
-                    id INTEGER PRIMARY KEY, email TEXT UNIQUE NOT NULL,
-                    password TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'user'
-                    CHECK(role IN ('admin','user')), created_at INTEGER NOT NULL);
-                CREATE UNIQUE INDEX IF NOT EXISTS one_admin ON users(role) WHERE role='admin';
-                CREATE TABLE IF NOT EXISTS sessions (
-                    hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id),
-                    csrf TEXT NOT NULL, expires INTEGER NOT NULL);
-                CREATE TABLE IF NOT EXISTS api_keys (
-                    hash TEXT PRIMARY KEY, user_id INTEGER UNIQUE NOT NULL REFERENCES users(id),
-                    suffix TEXT NOT NULL, created_at INTEGER NOT NULL);
-                CREATE TABLE IF NOT EXISTS orders (
-                    out_trade_no TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id),
-                    subject TEXT NOT NULL, amount TEXT NOT NULL, product TEXT NOT NULL,
-                    channel TEXT NOT NULL DEFAULT 'alipay', status TEXT NOT NULL DEFAULT 'CREATED',
-                    pay_url TEXT NOT NULL, trade_no TEXT UNIQUE,
-                    app_id TEXT NOT NULL, seller_id TEXT NOT NULL,
-                    created_at INTEGER NOT NULL, paid_at INTEGER, notify_url TEXT NOT NULL DEFAULT '',
-                    client_ip TEXT NOT NULL DEFAULT '');
-                CREATE INDEX IF NOT EXISTS user_orders ON orders(user_id, created_at DESC);
-                CREATE TABLE IF NOT EXISTS events (
-                    id INTEGER PRIMARY KEY, out_trade_no TEXT, accepted INTEGER NOT NULL,
-                    reason TEXT NOT NULL, created_at INTEGER NOT NULL,
-                    stage TEXT NOT NULL DEFAULT 'notification', details TEXT NOT NULL DEFAULT '{}', user_id INTEGER);
-                CREATE TABLE IF NOT EXISTS limits (key TEXT PRIMARY KEY, count INTEGER, expires INTEGER);
-                CREATE TABLE IF NOT EXISTS short_links (
-                    token TEXT PRIMARY KEY, out_trade_no TEXT UNIQUE NOT NULL REFERENCES orders(out_trade_no),
-                    created_at INTEGER NOT NULL);
-                CREATE TABLE IF NOT EXISTS console_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS service_health (name TEXT PRIMARY KEY, last_seen INTEGER NOT NULL);
-                CREATE TABLE IF NOT EXISTS channel_versions (id INTEGER PRIMARY KEY, channel TEXT NOT NULL, payload BLOB NOT NULL, created_at INTEGER NOT NULL);
-                CREATE TABLE IF NOT EXISTS channel_current (channel TEXT PRIMARY KEY, version INTEGER NOT NULL REFERENCES channel_versions(id));
-                CREATE TABLE IF NOT EXISTS channel_configs (
-                    id INTEGER PRIMARY KEY, channel TEXT NOT NULL, name TEXT NOT NULL,
-                    enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0,
-                    version INTEGER REFERENCES channel_versions(id), revision INTEGER NOT NULL DEFAULT 1);
-                CREATE UNIQUE INDEX IF NOT EXISTS default_channel_config ON channel_configs(channel) WHERE is_default=1;
-                CREATE TABLE IF NOT EXISTS payment_checks (
-                    out_trade_no TEXT PRIMARY KEY REFERENCES orders(out_trade_no),
-                    next_check INTEGER NOT NULL, locked_until INTEGER NOT NULL DEFAULT 0,
-                    lease TEXT NOT NULL DEFAULT '', attempts INTEGER NOT NULL DEFAULT 0,
-                    checked_at INTEGER, state TEXT NOT NULL DEFAULT 'scheduled', error TEXT NOT NULL DEFAULT '');
-                CREATE INDEX IF NOT EXISTS due_payment_checks ON payment_checks(next_check);
-                CREATE TABLE IF NOT EXISTS payment_returns (
-                    hash TEXT PRIMARY KEY, out_trade_no TEXT NOT NULL REFERENCES orders(out_trade_no),
-                    expires INTEGER NOT NULL);
-                CREATE TABLE IF NOT EXISTS checkout_jobs (
-                    out_trade_no TEXT PRIMARY KEY REFERENCES orders(out_trade_no),
-                    locked_until INTEGER NOT NULL DEFAULT 0, lease TEXT NOT NULL DEFAULT '');
-                CREATE TABLE IF NOT EXISTS refunds (
-                    refund_no TEXT PRIMARY KEY, out_trade_no TEXT NOT NULL REFERENCES orders(out_trade_no),
-                    amount TEXT NOT NULL, reason TEXT NOT NULL, actor INTEGER NOT NULL,
-                    status TEXT NOT NULL, created_at INTEGER NOT NULL, confirmed_at INTEGER,
-                    locked_until INTEGER NOT NULL DEFAULT 0, next_query INTEGER NOT NULL DEFAULT 0,
-                    error TEXT NOT NULL DEFAULT '');
-                CREATE INDEX IF NOT EXISTS order_refunds ON refunds(out_trade_no,created_at DESC);
-                CREATE TABLE IF NOT EXISTS outbox (
-                    id TEXT PRIMARY KEY, out_trade_no TEXT UNIQUE NOT NULL REFERENCES orders(out_trade_no),
-                    user_id INTEGER NOT NULL, url TEXT NOT NULL, payload TEXT NOT NULL,
-                    attempts INTEGER NOT NULL DEFAULT 0, next_attempt INTEGER NOT NULL,
-                    locked_until INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'pending',
-                    last_error TEXT NOT NULL DEFAULT '');
-            """)
-            db.execute("BEGIN IMMEDIATE")
-            columns = {row["name"] for row in db.execute("PRAGMA table_info(users)")}
-            if "disabled" not in columns:
-                db.execute("ALTER TABLE users ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0")
-            order_columns = {row["name"] for row in db.execute("PRAGMA table_info(orders)")}
-            if "channel_version" not in order_columns:
-                db.execute("ALTER TABLE orders ADD COLUMN channel_version INTEGER")
-            for name, definition in {"client_ip": "TEXT NOT NULL DEFAULT ''", "expires_at": "INTEGER", "payment_payload": "TEXT NOT NULL DEFAULT '{}'", "request_hash": "TEXT", "provider_notify_url": "TEXT", "provider_return_url": "TEXT", "payment_config_id": "INTEGER", "deleted_at": "INTEGER", "refunded_amount": "TEXT NOT NULL DEFAULT '0.00'", "provider_status": "TEXT NOT NULL DEFAULT ''", "cashier_qr": "TEXT NOT NULL DEFAULT ''", "active_refund_no": "TEXT"}.items():
-                if name not in order_columns: db.execute(f"ALTER TABLE orders ADD COLUMN {name} {definition}")
-            db.execute("UPDATE orders SET expires_at=created_at+900 WHERE expires_at IS NULL")
-            now = int(time.time())
-            saved = {r["key"]: json.loads(r["value"]) for r in db.execute("SELECT * FROM console_settings")}
-            db.execute("INSERT OR IGNORE INTO payment_checks(out_trade_no,next_check) SELECT out_trade_no,? FROM orders WHERE status='CREATED' AND channel IN ('alipay','wechat') AND created_at>=?", (now + saved.get("poll_interval_seconds", 10), now - saved.get("query_window_minutes", 1440) * 60))
-            db.execute("DELETE FROM payment_returns WHERE expires<?", (now,))
+            version=db.execute('PRAGMA user_version').fetchone()[0]
+            if version not in (0,1): raise ValueError('unsupported_database_schema')
+            if version==0:
+                if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchone():
+                    raise ValueError('fresh_database_required')
+                schema=Path(__file__).with_name('schema.sql').read_text()
+                db.executescript('BEGIN IMMEDIATE;\n'+schema+'\nPRAGMA user_version=1; COMMIT;')
+        from .groups import MerchantGroups
+        self.groups=MerchantGroups(self)
         self.path.chmod(0o600)
 
     @contextmanager
@@ -120,34 +74,40 @@ class Store:
         db = sqlite3.connect(self.path, timeout=15)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA foreign_keys=ON")
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA busy_timeout=15000")
         try:
             with db:
                 yield db
         finally:
             db.close()
 
-    def bootstrap(self, email, password):
-        if not email or not password:
-            return
+    def bootstrap(self):
         with self.connect() as db:
-            db.execute("BEGIN IMMEDIATE")
-            if db.execute("SELECT 1 FROM users WHERE role='admin'").fetchone():
-                return
-            if not 4 <= len(password) <= 128:
-                raise ValueError("BYPAY_ADMIN_PASSWORD must contain 4 to 128 characters")
-            db.execute("INSERT INTO users(email,password,role,created_at) VALUES (?,?,?,?)",
-                       (email.lower().strip(), generate_password_hash(password), "admin", int(time.time())))
+            db.execute('BEGIN IMMEDIATE')
+            if db.execute("SELECT 1 FROM users WHERE role='admin'").fetchone(): return
+            db.execute("INSERT INTO users(email,password,role,created_at,group_id,must_change_credentials) VALUES (?,?, 'admin',?,2,1)",
+                       ('admin@pay.com',generate_password_hash('Admin123'),int(time.time())))
 
     def user_by_email(self, email):
         with self.connect() as db:
             row = db.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
             return dict(row) if row else None
 
-    def register(self, email, password):
+    def register(self, email, password, *, manual=False, inviter=None):
+        encoded=generate_password_hash(password)
+        from .platform_rules import PlatformRules,cents
         with self.connect() as db:
-            cur = db.execute("INSERT INTO users(email,password,created_at) VALUES (?,?,?)",
-                             (email, generate_password_hash(password), int(time.time())))
-            return {"id": cur.lastrowid, "email": email, "role": "user"}
+            db.execute('BEGIN IMMEDIATE')
+            rules=PlatformRules(self).read(db)
+            cur=db.execute("INSERT INTO users(email,password,role,group_id,created_at) VALUES (?,?,'user',1,?)",
+                           (email.strip().lower(),encoded,int(time.time())))
+            identity=cur.lastrowid
+            db.execute('INSERT INTO merchant_access(user_id,review,review_required,fee_due,invite_code,inviter) VALUES (?,?,?,?,?,?)',
+                       (identity,'approved' if manual else 'pending',int(not manual),
+                        0 if manual or not rules['registration_paid'] else cents(rules['registration_fee']),
+                        secrets.token_urlsafe(9),inviter))
+            return {'id':identity,'email':email.strip().lower(),'role':'user'}
 
     def session(self, user_id):
         token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
@@ -160,9 +120,9 @@ class Store:
     def authenticate(self, token, api=False):
         with self.connect() as db:
             if api:
-                row = db.execute("SELECT u.id,u.email,u.role FROM api_keys k JOIN users u ON u.id=k.user_id WHERE k.hash=? AND u.disabled=0", (digest(token),)).fetchone()
+                row = db.execute("SELECT u.id,u.email,u.role,u.must_change_credentials FROM api_keys k JOIN users u ON u.id=k.user_id WHERE k.hash=? AND u.disabled=0", (digest(token),)).fetchone()
             else:
-                row = db.execute("SELECT u.id,u.email,u.role,s.csrf FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.hash=? AND s.expires>? AND u.disabled=0", (digest(token), int(time.time()))).fetchone()
+                row = db.execute("SELECT u.id,u.email,u.role,u.must_change_credentials,s.csrf FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.hash=? AND s.expires>? AND u.disabled=0", (digest(token), int(time.time()))).fetchone()
             return dict(row) if row else None
 
     def logout(self, token):
@@ -214,6 +174,12 @@ class Store:
             row = db.execute("SELECT o.* FROM short_links s JOIN orders o USING(out_trade_no) WHERE s.token=?", (token,)).fetchone()
             return dict(row) if row else None
 
+    def capture_payer_ip(self, number, address):
+        import ipaddress
+        address=str(ipaddress.ip_address(address))
+        with self.connect() as db:
+            db.execute("UPDATE orders SET client_ip=? WHERE out_trade_no=? AND client_ip=''",(address,number))
+
     def create_order(self, user_id, payload, pay_url, cfg, return_token=None, payment_payload=None, request_hash=None, client_ip=""):
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -222,12 +188,90 @@ class Store:
             db.execute("UPDATE orders SET expires_at=?,payment_payload=?,request_hash=? WHERE out_trade_no=?", (cfg.get("expires_at", int(time.time()) + 900), json.dumps(payment_payload or {}), request_hash, payload["out_trade_no"]))
             db.execute("UPDATE orders SET provider_notify_url=?,provider_return_url=? WHERE out_trade_no=?", (cfg.get("notify_url", ""), cfg.get("return_url", ""), payload["out_trade_no"]))
             db.execute("UPDATE orders SET payment_config_id=? WHERE out_trade_no=?", (cfg.get("payment_config_id"), payload["out_trade_no"]))
+            db.execute("UPDATE orders SET merchant_server_ip=? WHERE out_trade_no=?", (cfg.get("merchant_server_ip", ""), payload["out_trade_no"]))
             db.execute("INSERT INTO payment_checks(out_trade_no,next_check) VALUES (?,?)", (payload["out_trade_no"], int(time.time()) + self.setting("poll_interval_seconds", 10)))
             if hasattr(self,'operations'):self.operations.snapshot(db,user_id,payload['out_trade_no'],payload['amount'],cfg.get('merchant_fee_rate'))
             db.execute('DELETE FROM merchant_quota_reservations WHERE number=?',(payload['out_trade_no'],))
             if return_token:
                 db.execute("INSERT INTO payment_returns VALUES (?,?,?)", (digest(return_token), payload["out_trade_no"], int(time.time()) + 86400))
         return self.order(payload["out_trade_no"])
+
+    def create_crypto_order(self,user_id,payload,cfg,payment,request_hash=None,client_ip=""):
+        number=payload["out_trade_no"]
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            from .crypto import CryptoError
+            from .payment_terms import address_key,overlaps
+            active=db.execute("SELECT crypto_address,crypto_amount,match_mode FROM orders WHERE channel='crypto' AND crypto_network=? AND crypto_asset=? AND status IN ('CREATED','CONFIRMING') AND (status='CONFIRMING' OR expires_at+json_extract(payment_payload,'$.lookback_hours')*3600>?)",(payment['network'],payment['asset'],int(time.time()))).fetchall()
+            if any(address_key(payment['network'],row['crypto_address'])==address_key(payment['network'],payment['address']) and overlaps(payment['crypto_amount'],payment['match_mode'],row['crypto_amount'],row['match_mode']) for row in active):raise CryptoError('crypto_wallet_amount_conflict')
+            db.execute("INSERT INTO orders(out_trade_no,user_id,subject,amount,product,channel,pay_url,app_id,seller_id,created_at,notify_url,channel_version,client_ip) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                       (number,user_id,payload["subject"],payload["amount"],"page","crypto",payment["address"],payment["asset_code"],payment["network"],int(time.time()),payload.get("notify_url",""),cfg.get("channel_version"),client_ip))
+            db.execute("UPDATE orders SET expires_at=?,payment_payload=?,request_hash=?,provider_notify_url=?,payment_config_id=?,cashier_qr=?,crypto_network=?,crypto_asset=?,crypto_amount=?,crypto_address=?,crypto_rate=?,crypto_rate_updated_at=?,crypto_rate_source=?,crypto_quoted_at=? WHERE out_trade_no=?",
+                       (payment["expires_at"],json.dumps(payment),request_hash,payload.get("notify_url",""),cfg.get("payment_config_id"),payment["address"],payment["network"],payment["asset"],payment["crypto_amount"],payment["address"],payment["rate_cny"],payment["rate_updated_at"],payment["rate_source"],payment["rate_observed_at"],number))
+            db.execute('UPDATE orders SET fixed_rate_snapshot=?,market_rate_snapshot=?,rate_snapshot_at=?,match_mode=? WHERE out_trade_no=?',(payment['fixed_rate_snapshot'],payment['market_rate_snapshot'],payment['rate_snapshot_at'],payment['match_mode'],number))
+            db.execute("UPDATE orders SET merchant_server_ip=? WHERE out_trade_no=?", (cfg.get("merchant_server_ip", ""), number))
+            db.execute("INSERT INTO payment_checks(out_trade_no,next_check) VALUES (?,?)",(number,int(time.time())+self.setting("poll_interval_seconds",10)))
+            if hasattr(self,"operations"):
+                self.operations.snapshot(db,user_id,number,payload["amount"],cfg.get("merchant_fee_rate"))
+                db.execute("DELETE FROM merchant_quota_reservations WHERE number=?",(number,))
+        return self.order(number)
+
+    def apply_crypto_observation(self, observation, minimum_confirmations):
+        """Record an exactly matched transfer; confirmation is handled by the scanner."""
+        now=int(time.time());number=observation["out_trade_no"]
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            order=db.execute("SELECT * FROM orders WHERE out_trade_no=?",(number,)).fetchone()
+            if not order or order["channel"]!="crypto" or order["status"] not in {"CREATED","CONFIRMING"} or order["paid_at"]:return False
+            if order['status']=='CONFIRMING' and order['crypto_txid'] and order['crypto_txid']!=observation['txid']:return False
+            log_index=str(observation.get("log_index",0))
+            prior=db.execute("SELECT * FROM crypto_observations WHERE network=? AND txid=? AND log_index=?",(observation["network"],observation["txid"],log_index)).fetchone()
+            if prior and (prior["out_trade_no"]!=number or prior["block_hash"]==observation["block_hash"]):return False
+            if order["crypto_network"]!=observation["network"] or order["crypto_asset"]!=observation["asset"]:return False
+            expected_address=order["crypto_address"]
+            actual_address=observation["address"]
+            if order["crypto_network"] in {"ETH","BSC","ARBITRUM","POLYGON","PLASMA","AVAXC"}:
+                expected_address,actual_address=expected_address.lower(),actual_address.lower()
+            if expected_address!=actual_address:return False
+            if int(observation["timestamp"])<order["created_at"] or int(observation["timestamp"])>order["expires_at"]:return False
+            if not matches(observation["amount"],order["crypto_amount"],order["match_mode"]):return False
+            if prior:
+                db.execute("UPDATE crypto_observations SET out_trade_no=?,network=?,asset=?,address=?,amount=?,block_height=?,block_hash=?,seen_at=? WHERE network=? AND txid=? AND log_index=?",(number,observation["network"],observation["asset"],observation["address"],observation["amount"],int(observation["block_height"]),observation["block_hash"],now,observation["network"],observation["txid"],log_index))
+            else:
+                db.execute("INSERT INTO crypto_observations(txid,log_index,out_trade_no,network,asset,address,amount,block_height,block_hash,seen_at) VALUES (?,?,?,?,?,?,?,?,?,?)",(observation["txid"],log_index,number,observation["network"],observation["asset"],observation["address"],observation["amount"],int(observation["block_height"]),observation["block_hash"],now))
+            db.execute("UPDATE orders SET status='CONFIRMING',crypto_seen_at=CAST(strftime('%s','now') AS INTEGER),crypto_txid=?,crypto_block=?,from_address=?,crypto_confirmations=1,provider_status=? WHERE out_trade_no=? AND status IN ('CREATED','CONFIRMING')",(observation["txid"],int(observation["block_height"]),observation.get("from_address",""),f"1/{minimum_confirmations} confirmations",number))
+            db.execute("INSERT INTO events(out_trade_no,accepted,reason,created_at,stage,details,user_id) VALUES (?,1,'crypto_transfer_seen',?,'crypto.confirm',?,?)",(number,now,json.dumps({"txid":observation["txid"],"block":observation["block_height"],"amount":observation["amount"]}),order["user_id"]))
+        return True
+
+    def confirm_crypto_payment(self,number,txid,block_height,confirmations):
+        now=int(time.time())
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row=db.execute("SELECT * FROM orders WHERE out_trade_no=?",(number,)).fetchone()
+            if not row or row["channel"]!="crypto" or row["status"]!="CONFIRMING" or row["paid_at"]:return False
+            if row["crypto_txid"]!=txid or row["crypto_block"]!=block_height:return False
+            if confirmations<int(json.loads(row["payment_payload"]).get("confirmations",1)):return False
+            observation=db.execute("SELECT log_index,block_hash FROM crypto_observations WHERE network=? AND txid=? AND out_trade_no=?",(row["crypto_network"],txid,number)).fetchone()
+            if not observation:return False
+            trade_number=f"{row['crypto_network']}:{txid}:{observation['log_index'] if observation else '0'}"
+            db.execute("UPDATE orders SET status='PAID',trade_no=?,paid_at=?,crypto_confirmations=?,provider_status=? WHERE out_trade_no=? AND status='CONFIRMING'",(trade_number,now,int(confirmations),f"{confirmations} confirmations",number))
+            self.operations.paid(db,dict(row))
+            if row["notify_url"]:
+                event_id=str(uuid.uuid4())
+                payload=json.dumps({"id":event_id,"event":"payment.paid","out_trade_no":number,"trade_no":txid,"amount":row["amount"],"currency":"CNY","channel":"crypto","crypto_network":row["crypto_network"],"crypto_asset":row["crypto_asset"],"crypto_amount":row["crypto_amount"],"status":"PAID","paid_at":now},separators=(",",":"))
+                db.execute("INSERT OR IGNORE INTO outbox(id,out_trade_no,user_id,url,payload,next_attempt) VALUES (?,?,?,?,?,?)",(event_id,number,row["user_id"],row["notify_url"],payload,now))
+            db.execute("INSERT INTO events(out_trade_no,accepted,reason,created_at,stage,details,user_id) VALUES (?,1,'crypto_confirmed',?,'crypto.confirm',?,?)",(number,now,json.dumps({"txid":txid,"block":block_height,"confirmations":confirmations}),row["user_id"]))
+        return True
+
+    def rollback_crypto_observation(self,number,txid,log_index=None):
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            order=db.execute("SELECT status,crypto_txid,crypto_network FROM orders WHERE out_trade_no=?",(number,)).fetchone()
+            if order and order["status"]=="CONFIRMING" and order["crypto_txid"]==txid:
+                db.execute("UPDATE orders SET status='CREATED',crypto_txid='',crypto_block=0,from_address='',crypto_confirmations=0,crypto_seen_at=0,provider_status='reorg_detected' WHERE out_trade_no=?",(number,))
+                if log_index is not None:db.execute("DELETE FROM crypto_observations WHERE network=? AND txid=? AND log_index=? AND out_trade_no=?",(order["crypto_network"],txid,str(log_index),number))
+                else:db.execute("DELETE FROM crypto_observations WHERE network=? AND txid=? AND out_trade_no=?",(order["crypto_network"],txid,number))
+                db.execute("INSERT INTO events(out_trade_no,accepted,reason,created_at,stage,details,user_id) SELECT ?,0,'crypto_reorg',?,'crypto.confirm',?,user_id FROM orders WHERE out_trade_no=?",(number,int(time.time()),json.dumps({"txid":txid}),number))
 
     def claim_checkout(self, number):
         now, lease = int(time.time()), secrets.token_hex(16)

@@ -3,6 +3,7 @@ import ipaddress
 import json
 import re
 import secrets
+import sqlite3
 import time
 import unicodedata
 from datetime import datetime,timedelta
@@ -27,33 +28,15 @@ def due_day(days,now=None):
 class Operations:
     def __init__(self,store,mailer,trace):
         self.store,self.mailer,self.trace=store,mailer,trace;self.rules=PlatformRules(store)
-        with store.connect() as db:db.executescript('''
-          CREATE TABLE IF NOT EXISTS merchant_access(user_id INTEGER PRIMARY KEY REFERENCES users(id),review TEXT DEFAULT 'approved',review_note TEXT DEFAULT '',fee_due INTEGER DEFAULT 0,fee_paid INTEGER DEFAULT 0,inviter INTEGER,invite_code TEXT UNIQUE,risk_hold INTEGER DEFAULT 0,risk_reason TEXT DEFAULT '');
-          CREATE TABLE IF NOT EXISTS merchant_domains(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL,host TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',created_at INTEGER NOT NULL,UNIQUE(user_id,host));
-          CREATE TABLE IF NOT EXISTS ledger_events(id TEXT PRIMARY KEY,kind TEXT NOT NULL,reference TEXT NOT NULL,user_id INTEGER NOT NULL,created_at INTEGER NOT NULL);
-          CREATE TABLE IF NOT EXISTS ledger_lines(id INTEGER PRIMARY KEY,event_id TEXT NOT NULL REFERENCES ledger_events(id),account TEXT NOT NULL,user_id INTEGER NOT NULL,cents INTEGER NOT NULL);
-          CREATE TRIGGER IF NOT EXISTS ledger_no_update BEFORE UPDATE ON ledger_lines BEGIN SELECT RAISE(ABORT,'immutable_ledger');END;
-          CREATE TRIGGER IF NOT EXISTS ledger_no_delete BEFORE DELETE ON ledger_lines BEGIN SELECT RAISE(ABORT,'immutable_ledger');END;
-          CREATE TABLE IF NOT EXISTS financial_orders(number TEXT PRIMARY KEY,gross INTEGER NOT NULL,fee INTEGER NOT NULL,commission INTEGER NOT NULL,inviter INTEGER,policy TEXT NOT NULL,paid INTEGER DEFAULT 0,phase TEXT DEFAULT 'pending',available_at INTEGER,fee_reversed INTEGER DEFAULT 0,commission_reversed INTEGER DEFAULT 0,commission_released INTEGER DEFAULT 0);
-          CREATE TABLE IF NOT EXISTS platform_bills(number TEXT PRIMARY KEY,user_id INTEGER NOT NULL,purpose TEXT NOT NULL,amount INTEGER NOT NULL,status TEXT DEFAULT 'pending');
-          CREATE TABLE IF NOT EXISTS refund_holds(refund_no TEXT PRIMARY KEY,user_id INTEGER NOT NULL,source TEXT NOT NULL,cents INTEGER NOT NULL,fee_return INTEGER NOT NULL,commission_return INTEGER NOT NULL,status TEXT DEFAULT 'held');
-          CREATE TABLE IF NOT EXISTS deposits(number TEXT PRIMARY KEY,user_id INTEGER NOT NULL,cents INTEGER NOT NULL,release_at INTEGER NOT NULL,status TEXT DEFAULT 'frozen');
-          CREATE TABLE IF NOT EXISTS settlements(id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,gross INTEGER NOT NULL,fee INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'pending',created_at INTEGER NOT NULL,paid_at INTEGER,reference TEXT UNIQUE,beneficiary BLOB);
-          CREATE TABLE IF NOT EXISTS settlement_accounts(user_id INTEGER PRIMARY KEY,payload BLOB NOT NULL);
-          CREATE TABLE IF NOT EXISTS task_runs(name TEXT PRIMARY KEY,locked_until INTEGER DEFAULT 0,started_at INTEGER,finished_at INTEGER,status TEXT DEFAULT 'idle',error TEXT DEFAULT '');
-          CREATE TABLE IF NOT EXISTS payment_attempts(number TEXT PRIMARY KEY,user_id INTEGER NOT NULL,ip TEXT NOT NULL,created_at INTEGER NOT NULL);
-        ''')
         with store.connect() as db:
-            access_columns={row['name'] for row in db.execute('PRAGMA table_info(merchant_access)')}
-            if 'pay_enabled' not in access_columns:db.execute('ALTER TABLE merchant_access ADD COLUMN pay_enabled INTEGER NOT NULL DEFAULT 1')
-            for row in db.execute('SELECT id FROM users').fetchall():self.ensure(row['id'],db)
+            for row in db.execute('SELECT id FROM users').fetchall(): self.ensure(row['id'],db)
         store.operations=self
 
     def ensure(self,user,db=None,new=False,inviter=None):
         if db is None:
             with self.store.connect() as db:return self.ensure(user,db,new,inviter)
         rules=self.rules.read(db)
-        db.execute('INSERT OR IGNORE INTO merchant_access(user_id,review,fee_due,invite_code,inviter) VALUES (?,?,?,?,?)',(user,'pending' if new and rules['registration_review'] else 'approved',cents(rules['registration_fee']) if new and rules['registration_paid'] else 0,secrets.token_urlsafe(9),inviter))
+        db.execute('INSERT OR IGNORE INTO merchant_access(user_id,review,fee_due,invite_code,inviter,review_required) VALUES (?,?,?,?,?,?)',(user,'pending' if new and rules['registration_review'] else 'approved',cents(rules['registration_fee']) if new and rules['registration_paid'] else 0,secrets.token_urlsafe(9),inviter,int(bool(new and rules['registration_review']))))
         return dict(db.execute('SELECT * FROM merchant_access WHERE user_id=?',(user,)).fetchone())
 
     def inviter(self,code):
@@ -104,7 +87,7 @@ class Operations:
                 db.execute('BEGIN IMMEDIATE')
                 if not db.execute('SELECT 1 FROM payment_attempts WHERE number=?',(number,)).fetchone():
                     count=db.execute('SELECT count(*) FROM payment_attempts WHERE user_id=? AND created_at>=?',(user,since)).fetchone()[0]
-                    ipcount=db.execute('SELECT count(*) FROM payment_attempts WHERE ip=? AND created_at>=?',(ip,since)).fetchone()[0]
+                    ipcount=db.execute('SELECT count(*) FROM payment_attempts WHERE ip=? AND created_at>=?',(ip,since)).fetchone()[0] if ip else 0
                     if count>=rules['risk_merchant_count'] or ipcount>=rules['risk_ip_count']:raise ValueError('risk_frequency_exceeded')
                     maximum=cents(rules['risk_daily_amount'])
                     if maximum:
@@ -124,7 +107,8 @@ class Operations:
         if value<=0:return 0
         with self.store.connect() as db:
             db.execute('BEGIN IMMEDIATE')
-            self.journal(db,'admin-deposit:'+reference,'deposit_adjust',reference,user,[('clearing',0,value),('deposit',user,-value)])
+            if self.journal(db,'admin-deposit:'+reference,'deposit_adjust',reference,user,[('manual_adjustment',0,value),('deposit',user,-value)]):
+                db.execute("INSERT INTO deposits(number,user_id,cents,release_at,status,source,remaining) VALUES (?,?,?,?,'frozen','manual',?)",('MANUAL_'+reference,user,value,int(time.time())+self.rules.read(db)['deposit_freeze_days']*86400,value))
         return value
 
     def journal(self,db,key,kind,reference,user,lines):
@@ -137,16 +121,22 @@ class Operations:
     def snapshot(self,db,user,number,value,merchant_fee_rate=None):
         if db.execute('SELECT 1 FROM platform_bills WHERE number=?',(number,)).fetchone():return
         rules=self.rules.read(db);gross=cents(value)
-        if merchant_fee_rate is not None: rules['fee_rate']=str(merchant_fee_rate)
-        fee=rate_fee(gross,rules['fee_rate'])
-        if fee<cents(rules['fee_threshold']):fee=max(fee,cents(rules['fee_minimum']))
-        fee=min(gross,fee)
-        if fee>=gross:fee=0  # 金额太小时手续费会等于整笔金额，直接免收
+        group=self.store.groups.for_user(user,db)
+        cost_rate=Decimal(group['cost_rate'])
+        service_rate=Decimal(group['service_rate'])
+        rounded_total=rate_fee(gross,str(service_rate+cost_rate))
+        channel_cost=rate_fee(gross,str(cost_rate))
+        service_fee=max(0,rounded_total-channel_cost)
+        if service_fee<cents(rules['fee_threshold']):service_fee=max(service_fee,cents(rules['fee_minimum'])) if service_rate>0 else 0
+        total_fee=service_fee+channel_cost
+        if total_fee>=gross: service_fee=channel_cost=total_fee=0  # 不让 0.01 元订单被扣成零
+        fee=total_fee
+        rules={**rules,'fee_rate':format(service_rate+cost_rate,'.2f')}
         state=self.ensure(user,db);inviter=state['inviter'];commission=0
-        if rules['invite_enabled'] and inviter and inviter!=user:
-            commission=rate_fee(fee if rules['invite_basis']=='fee' else gross,rules['invite_rate'])
-            if rules['invite_cap_fee']:commission=min(fee,commission)
-        db.execute('INSERT OR IGNORE INTO financial_orders(number,gross,fee,commission,inviter,policy) VALUES (?,?,?,?,?,?)',(number,gross,fee,commission,inviter,json.dumps(rules)))
+        if group['billing_mode']!='admin_cost_only' and rules['invite_enabled'] and inviter and inviter!=user:
+            commission=rate_fee(service_fee if rules['invite_basis']=='fee' else gross,rules['invite_rate'])
+            if rules['invite_cap_fee']:commission=min(service_fee,commission)
+        db.execute('INSERT OR IGNORE INTO financial_orders(number,gross,fee,commission,inviter,policy,service_fee,channel_cost) VALUES (?,?,?,?,?,?,?,?)',(number,gross,fee,commission,inviter,json.dumps({**rules,'service_rate':str(service_rate),'channel_cost_rate':str(cost_rate),'merchant_group_id':group['id']}),service_fee,channel_cost))
 
     def paid(self,db,order):
         number,user=order['out_trade_no'],order['user_id'];gross=cents(order['amount'])
@@ -160,15 +150,19 @@ class Operations:
                 db.execute('UPDATE merchant_access SET fee_paid=fee_paid+? WHERE user_id=?',(charge,user))
             elif bill['purpose']=='deposit':
                 self.journal(db,'bill:'+number,'deposit',number,user,[('clearing',0,gross),('deposit',user,-gross)])
-                db.execute('INSERT OR IGNORE INTO deposits VALUES (?,?,?,?,\'frozen\')',(number,user,gross,int(time.time())+self.rules.read(db)['deposit_freeze_days']*86400))
+                db.execute("INSERT OR IGNORE INTO deposits(number,user_id,cents,release_at,status,source,remaining) VALUES (?,?,?,?,'frozen','real',?)",(number,user,gross,int(time.time())+self.rules.read(db)['deposit_freeze_days']*86400,gross))
             db.execute("UPDATE platform_bills SET status='paid' WHERE number=?",(number,));return
         row=db.execute('SELECT * FROM financial_orders WHERE number=?',(number,)).fetchone()
         if not row or row['paid']:return
         rules=json.loads(row['policy']);commission_account='available' if rules['invite_timing']=='immediate' else 'commission_hold'
-        lines=[('clearing',0,gross),('pending',user,-(gross-row['fee'])),('fee_revenue',0,-row['fee']+row['commission'])]
+        group_id=json.loads(row['policy']).get('merchant_group_id',1)
+        if group_id==2:
+            lines=[('clearing',0,gross),('available',user,-(gross-row['channel_cost'])),('channel_cost_payable',0,-row['channel_cost'])]
+        else:
+            lines=[('clearing',0,gross),('pending',user,-(gross-row['fee'])),('fee_revenue',0,-row['service_fee']+row['commission']),('channel_cost_payable',0,-row['channel_cost'])]
         if row['commission']:lines.append((commission_account,row['inviter'],-row['commission']))
         self.journal(db,'paid:'+number,'payment',number,user,lines)
-        db.execute('UPDATE financial_orders SET paid=1,available_at=?,commission_released=? WHERE number=?',(due_day(rules['settlement_days']),int(commission_account=='available'),number))
+        db.execute('UPDATE financial_orders SET paid=1,phase=?,available_at=?,commission_released=? WHERE number=?',('available' if group_id==2 else 'pending',int(time.time()) if group_id==2 else due_day(rules['settlement_days']),int(commission_account=='available'),number))
         cfg=self.mailer.config(db)
         if cfg['notify_payments']:
             email=db.execute('SELECT email FROM users WHERE id=?',(user,)).fetchone()['email'];self.mailer.enqueue('reminder',email,{'message':'订单已支付','order_no':number,'amount':order['amount']},'paid:'+number,db=db)
@@ -178,16 +172,52 @@ class Operations:
         if not row or not row['paid']:return
         if db.execute('SELECT 1 FROM refund_holds WHERE refund_no=?',(refund_no,)).fetchone():return
         rules=json.loads(row['policy']);refunded=cents(order['refunded_amount']);new=refunded+cents(value)
-        fee_return=(proportional(row['fee'],new,row['gross'])-row['fee_reversed']) if rules['refund_fee_payer']=='platform' else 0
+        service_fee_return=(proportional(row['service_fee'],new,row['gross'])-row['service_fee_reversed']) if rules['refund_fee_payer']=='platform' else 0
+        channel_cost_return=(proportional(row['channel_cost'],new,row['gross'])-row['channel_cost_reversed']) if rules['refund_fee_payer']=='platform' else 0
+        fee_return=service_fee_return+channel_cost_return
         commission_return=proportional(row['commission'],new,row['gross'])-row['commission_reversed']
         fee_part=proportional(row['fee'],new,row['gross'])-proportional(row['fee'],refunded,row['gross'])
         user=order['user_id'];debit=cents(value)-fee_return
-        allocations={row['phase']:cents(value)-fee_part}
-        if rules['refund_fee_payer']=='merchant':allocations['available']=allocations.get('available',0)+fee_part
-        for source,value in allocations.items():
-            if self.balance(db,user,source)<value:raise ValueError('refund_balance_insufficient')
+        # Reserve the order's net entitlement first. When the merchant bears
+        # fees, the pro-rated fee portion must also come from available funds;
+        # the guarantee deposit covers any remainder. This prevents a refund
+        # from consuming another pending order's entitlement for the fee.
+        principal=max(0,cents(value)-fee_part)
+        remaining=principal;allocations={}
+        candidates=[row['phase'],'available' if row['phase']=='pending' else 'pending']
+        for source in candidates:
+            taken=min(remaining,max(0,self.balance(db,user,source)-allocations.get(source,0)))
+            if taken:allocations[source]=allocations.get(source,0)+taken;remaining-=taken
+            if not remaining:break
+        if rules['refund_fee_payer']=='merchant' and fee_part:
+            available=max(0,self.balance(db,user,'available')-allocations.get('available',0))
+            taken=min(fee_part,available)
+            if taken:allocations['available']=allocations.get('available',0)+taken
+        remaining=debit-sum(allocations.values())
+        if remaining<0:
+            excess=-remaining
+            for source in ('deposit','available',row['phase'],'pending'):
+                take=min(excess,allocations.get(source,0))
+                if take:allocations[source]-=take;excess-=take
+                if not excess:break
+            if excess:raise ValueError('unbalanced_refund_reservation')
+            remaining=0
+        if remaining:
+            deposit_balance=self.balance(db,user,'deposit')
+            if deposit_balance<remaining:raise ValueError('refund_balance_insufficient')
+            allocations['deposit']=remaining
+            lots=db.execute("SELECT d.number,d.remaining,COALESCE(SUM(CASE WHEN a.status='held' THEN a.cents ELSE 0 END),0) reserved FROM deposits d LEFT JOIN refund_deposit_lots a ON a.deposit_no=d.number WHERE d.user_id=? AND d.status='frozen' GROUP BY d.number ORDER BY d.release_at,d.number",(user,)).fetchall()
+            lot_left=remaining
+            for lot in lots:
+                available=max(0,lot['remaining']-lot['reserved'])
+                take=min(lot_left,available)
+                if take:
+                    db.execute("INSERT INTO refund_deposit_lots(refund_no,deposit_no,cents,status) VALUES (?,?,?,'held')",(refund_no,lot['number'],take))
+                    lot_left-=take
+                if not lot_left:break
+            if lot_left:raise ValueError('refund_balance_insufficient')
         self.journal(db,'refund-hold:'+refund_no,'refund_hold',order['out_trade_no'],user,[(source,user,value) for source,value in allocations.items()]+[('refund_hold',user,-debit)])
-        db.execute('INSERT INTO refund_holds(refund_no,user_id,source,cents,fee_return,commission_return) VALUES (?,?,?,?,?,?)',(refund_no,user,json.dumps(allocations),debit,fee_return,commission_return))
+        db.execute('INSERT INTO refund_holds(refund_no,user_id,source,cents,fee_return,commission_return,service_fee_return,channel_cost_return) VALUES (?,?,?,?,?,?,?,?)',(refund_no,user,json.dumps(allocations),debit,fee_return,commission_return,service_fee_return,channel_cost_return))
 
     def finish_refund(self,db,order,record,status):
         hold=db.execute('SELECT * FROM refund_holds WHERE refund_no=?',(record['refund_no'],)).fetchone()
@@ -196,10 +226,16 @@ class Operations:
         if status=='FAILED':
             allocations=json.loads(hold['source']) if hold['source'].startswith('{') else {hold['source']:hold['cents']}
             lines=[('refund_hold',user,hold['cents'])]+[(source,user,-value) for source,value in allocations.items()]
+            db.execute("UPDATE refund_deposit_lots SET status='released' WHERE refund_no=? AND status='held'",(record['refund_no'],))
         else:
-            lines=[('refund_hold',user,hold['cents']),('fee_revenue',0,hold['fee_return']-hold['commission_return']),('clearing',0,-cents(record['amount']))]
+            lines=[('refund_hold',user,hold['cents']),('fee_revenue',0,hold['service_fee_return']-hold['commission_return']),('channel_cost_payable',0,hold['channel_cost_return']),('clearing',0,-cents(record['amount']))]
             if hold['commission_return']:lines.append(('available' if row['commission_released'] else 'commission_hold',row['inviter'],hold['commission_return']))
-            db.execute('UPDATE financial_orders SET fee_reversed=fee_reversed+?,commission_reversed=commission_reversed+? WHERE number=?',(hold['fee_return'],hold['commission_return'],number))
+            db.execute('UPDATE financial_orders SET fee_reversed=fee_reversed+?,service_fee_reversed=service_fee_reversed+?,channel_cost_reversed=channel_cost_reversed+?,commission_reversed=commission_reversed+? WHERE number=?',(hold['fee_return'],hold['service_fee_return'],hold['channel_cost_return'],hold['commission_return'],number))
+            lots=db.execute("SELECT deposit_no,cents FROM refund_deposit_lots WHERE refund_no=? AND status='held'",(record['refund_no'],)).fetchall()
+            for lot in lots:
+                changed=db.execute("UPDATE deposits SET remaining=remaining-? WHERE number=? AND remaining>=?",(lot['cents'],lot['deposit_no'],lot['cents'])).rowcount
+                if not changed:raise ValueError('refund_deposit_lot_conflict')
+            db.execute("UPDATE refund_deposit_lots SET status='spent' WHERE refund_no=? AND status='held'",(record['refund_no'],))
         self.journal(db,'refund:'+record['refund_no'],'refund_'+status.lower(),number,user,lines)
         db.execute('UPDATE refund_holds SET status=? WHERE refund_no=?',(status,record['refund_no']))
 
@@ -207,13 +243,17 @@ class Operations:
         with self.store.connect() as db:
             balances={name:amount(self.balance(db,user,name)) for name in ('pending','available','deposit','refund_hold','settlement_hold','commission_hold')}
             events=[dict(r) for r in db.execute('SELECT e.id,e.kind,e.reference,e.created_at,l.account,l.cents FROM ledger_events e JOIN ledger_lines l ON l.event_id=e.id WHERE l.user_id=? ORDER BY e.created_at DESC,l.id DESC LIMIT 100',(user,))]
-            settlements=[dict(r) for r in db.execute('SELECT id,gross,fee,status,created_at,paid_at,reference FROM settlements WHERE user_id=? ORDER BY created_at DESC LIMIT 50',(user,))]
+            settlements=[dict(r) for r in db.execute('SELECT id,gross,fee,status,created_at,paid_at,reference,beneficiary FROM settlements WHERE user_id=? ORDER BY created_at DESC LIMIT 50',(user,))]
             beneficiary=db.execute('SELECT payload FROM settlement_accounts WHERE user_id=?',(user,)).fetchone()
             deposits=[dict(r) for r in db.execute('SELECT * FROM deposits WHERE user_id=? ORDER BY release_at DESC LIMIT 30',(user,))]
+        for entry in settlements:entry['beneficiary']=json.loads(self.mailer.cipher.decrypt(entry['beneficiary'])) if entry['beneficiary'] else {}
         return {'balances':balances,'entries':events,'settlements':settlements,'deposits':deposits,'beneficiary':json.loads(self.mailer.cipher.decrypt(beneficiary['payload'])) if beneficiary else {'channel':'alipay','account':'','name':''},'access':self.access(user)}
 
     def beneficiary(self,user,payload):
-        if not isinstance(payload,dict) or set(payload)!={'channel','account','name'} or payload['channel'] not in {'alipay','bank'} or any(not isinstance(v,str) or not v.strip() or len(v)>200 or any(ord(c)<32 for c in v) for v in payload.values()):raise ValueError('invalid_beneficiary')
+        if not isinstance(payload,dict) or not isinstance(payload.get('channel'),str):raise ValueError('invalid_beneficiary')
+        if payload['channel'] in {'alipay','bank'}:
+            if set(payload)!={'channel','account','name'} or any(not isinstance(v,str) or not v.strip() or len(v)>200 or any(ord(c)<32 for c in v) for v in payload.values()):raise ValueError('invalid_beneficiary')
+        else:raise ValueError('invalid_beneficiary')
         with self.store.connect() as db:db.execute('INSERT INTO settlement_accounts VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET payload=excluded.payload',(user,self.mailer.cipher.encrypt(json.dumps(payload).encode())))
 
     def settlement(self,user,value=None,automatic=False):
@@ -238,17 +278,23 @@ class Operations:
         return number
 
     def finish_settlement(self,number,action,reference):
-        if action not in {'paid','cancel'} or (action=='paid' and (not isinstance(reference,str) or not 6<=len(reference)<=128 or any(ord(c)<32 for c in reference))):raise ValueError('settlement_evidence_required')
+        if action not in {'paid','cancel'}:raise ValueError('settlement_evidence_required')
         with self.store.connect() as db:
             db.execute('BEGIN IMMEDIATE');row=db.execute('SELECT * FROM settlements WHERE id=?',(number,)).fetchone()
-            if not row or row['status']!='pending':raise ValueError('settlement_not_pending')
+            if not row:raise ValueError('settlement_not_pending')
+            if row['status']!='pending':
+                if action==row['status'] and (action=='cancel' or reference==row['reference']):return True
+                raise ValueError('settlement_not_pending')
             user=row['user_id']
             if action=='paid' and (self.balance(db,user,'available')<0 or self.ensure(user,db)['risk_hold']):raise ValueError('settlement_balance_changed')
+            if action=='paid' and (not isinstance(reference,str) or not 6<=len(reference)<=128 or any(ord(c)<32 for c in reference)):
+                raise ValueError('settlement_evidence_required')
             lines=[('settlement_hold',user,row['gross'])]
             if action=='cancel':lines.append(('available',user,-row['gross']))
             else:lines += [('clearing',0,-(row['gross']-row['fee'])),('settlement_fee',0,-row['fee'])]
             self.journal(db,'settlement-result:'+number,'settlement_'+action,number,user,lines)
-            db.execute('UPDATE settlements SET status=?,reference=?,paid_at=? WHERE id=?',(action,reference if action=='paid' else None,int(time.time()) if action=='paid' else None,number))
+            try:db.execute('UPDATE settlements SET status=?,reference=?,paid_at=? WHERE id=?',(action,reference if action=='paid' else None,int(time.time()) if action=='paid' else None,number))
+            except sqlite3.IntegrityError:raise ValueError('settlement_reference_used') from None
 
     def release_deposit(self,user,number):
         with self.store.connect() as db:
@@ -258,8 +304,10 @@ class Operations:
             last=db.execute('SELECT MAX(created_at) FROM orders WHERE user_id=? AND out_trade_no NOT IN (SELECT number FROM platform_bills)',(user,)).fetchone()[0] or 0
             unresolved=db.execute("SELECT 1 FROM orders WHERE user_id=? AND (status='REFUNDING' OR (status='CREATED' AND expires_at>?)) LIMIT 1",(user,int(time.time()))).fetchone()
             if not row or row['release_at']>time.time() or last+rules['deposit_freeze_days']*86400>time.time() or access['risk_hold'] or unresolved:raise ValueError('deposit_still_frozen')
-            self.journal(db,'deposit-release:'+number,'deposit_release',number,user,[('deposit',user,row['cents']),('available',user,-row['cents'])])
-            db.execute("UPDATE deposits SET status='released' WHERE number=?",(number,))
+            value=row['remaining']
+            if self.balance(db,user,'deposit')<value:raise ValueError('deposit_still_frozen')
+            self.journal(db,'deposit-release:'+number,'deposit_release',number,user,[('deposit',user,value),('available',user,-value)])
+            db.execute("UPDATE deposits SET status='released',remaining=0 WHERE number=?",(number,))
 
     def tick(self):
         now=int(time.time());rules=self.rules.read();name='platform'

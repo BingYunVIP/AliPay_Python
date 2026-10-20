@@ -28,10 +28,10 @@ const channels = [
 const code = computed(() => [
   { text: 'PID="1000"; KEY="$MERCHANT_MD5_KEY"', type: 'header' },
   { text: 'N="demo_$(date +%s)"', type: 'header' },
-  { text: 'URL="https://test.bingyun.vip/notify"', type: 'header' },
+  { text: 'URL="https://merchant.example.com/notify"', type: 'header' },
   { text: 'DATA="clientip=127.0.0.1&money=0.01&name=ByPay&notify_url=${URL}&out_trade_no=${N}&pid=${PID}&type=alipay"', type: 'body' },
   { text: 'SIGN=$(printf "%s" "${DATA}${KEY}" | openssl dgst -md5 -r | cut -d " " -f1)', type: 'body' },
-  { text: `curl '${origin}/mapi.php' \\`, type: 'command' },
+  { text: `curl '${origin}/api/merchant/v1/orders/create' \\`, type: 'command' },
   { text: '  --data "${DATA}&sign_type=MD5&sign=${SIGN}"', type: 'body' },
 ])
 async function copy() {

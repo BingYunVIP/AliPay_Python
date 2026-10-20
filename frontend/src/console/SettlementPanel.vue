@@ -72,7 +72,7 @@ onMounted(start)
       <table class="console-table admin-table settlement-table">
         <thead><tr>
           <th>{{ t('申请时间', 'Requested') }}</th><th>{{ t('商户', 'Merchant') }}</th><th>{{ t('收款账户', 'Payout account') }}</th>
-          <th class="num">{{ t('实付金额', 'Payout') }}</th><th>{{ t('状态', 'Status') }}</th><th class="align-right"><span class="action-head-pair">{{ t('操作', 'Actions') }}</span></th>
+          <th class="num">{{ t('出款金额', 'Payout') }}</th><th>{{ t('状态', 'Status') }}</th><th class="align-right"><span class="action-head-pair">{{ t('操作', 'Actions') }}</span></th>
         </tr></thead>
         <tbody>
           <tr v-for="row in rows" :key="row.id">
@@ -89,18 +89,19 @@ onMounted(start)
     <EmptyState v-else icon="wallet" :title="loading ? t('正在读取结算申请…', 'Loading settlements…') : filter === 'pending' ? t('没有待处理的结算申请', 'Nothing is waiting for payout') : t('暂无结算申请', 'No settlements yet')" />
   </section>
   <ConfirmDialog :open="!!selected" :busy="busy" :destructive="action === 'cancel'" :title="action === 'paid' ? t('登记真实出款凭据', 'Record the payout reference') : t('取消结算申请', 'Cancel this settlement')"
-    :description="action === 'paid' ? t('请先核对实际转账成功，登记后结算冻结金额会记为已出款', 'Check that the transfer went through. The frozen amount is then recorded as paid out') : t('取消后冻结金额返回商户可用余额', 'The frozen amount returns to the merchant’s available balance')"
+    :description="action === 'paid' ? t('请先完成 CNY 实际转账，再登记渠道转账流水号', 'Complete the CNY transfer, then record its reference') : t('取消后冻结金额返回商户可用余额', 'The frozen amount returns to the merchant’s available balance')"
     :label="action === 'paid' ? t('确认已出款', 'Confirm payout') : t('确认取消', 'Cancel settlement')" @cancel="close" @confirm="apply">
     <div v-if="selected" class="confirm-summary settlement-summary">
       <div><span>{{ t('商户', 'Merchant') }}</span><b>{{ selected.email }}</b></div>
       <div class="confirm-amount"><b><small>￥</small>{{ amount(net(selected)) }}</b></div>
       <div><span>{{ methodName(selected.beneficiary.channel) }}</span><b>{{ selected.beneficiary.name }}</b><code translate="no">{{ selected.beneficiary.account }}</code></div>
     </div>
-    <template v-if="action === 'paid'">
+    <template v-if="selected&&action === 'paid'">
       <label for="settlement-reference">{{ t('渠道转账流水号', 'Transfer reference') }}</label>
       <input id="settlement-reference" v-model="reference" name="reference" minlength="6" maxlength="128" autocomplete="off" spellcheck="false" :aria-invalid="touched && !!referenceError" :aria-describedby="touched && referenceError ? 'settlement-reference-error' : undefined" :disabled="busy" />
       <p v-if="touched && referenceError" id="settlement-reference-error" class="field-error" role="alert">{{ referenceError }}</p>
     </template>
+
     <p v-if="actionError" class="error-box" role="alert">{{ actionError }}</p>
   </ConfirmDialog>
 </template>

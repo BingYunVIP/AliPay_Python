@@ -1,5 +1,5 @@
 <script setup>
-import { computed, inject, reactive, ref, watch } from 'vue'
+import { computed, inject, onMounted, reactive, ref, watch } from 'vue'
 import { api, errorText, t } from '../state'
 import { usePaged } from './useConsole'
 import { amount, fullDate } from './format'
@@ -12,24 +12,28 @@ const c = inject('console'), search = ref(''), editing = ref(null), createDialog
 const merchantDialog = ref(null)
 const reviewing = ref(null), reviewStatus = ref('approved'), reviewNote = ref(''), riskUser = ref(null), payUser = ref(null)
 // 新增商户沿用 Epay admin/uset.php?my=add 的字段顺序：登录账号 → 网站域名 → 功能开关
-const blank = () => ({ email: '', password: '', domains: [''], whitelist: true, disabled: false, payEnabled: true, deposit: '0.00' })
+const blank = () => ({ email: '', password: '', domains: [''], disabled: false, payEnabled: true, groupId: 1, deposit: '0.00' })
+const groups = ref([])
+async function loadGroups(){try{groups.value=(await api('/api/admin/merchant-groups')).groups}catch(e){error.value=errorText(e)}}
+onMounted(loadGroups)
+watch(c.revision,loadGroups)
 const form = reactive(blank())
-const policy = ref({ deposit_minimum: '10.00', fee_rate: '1.50', fee_minimum: '0.01', merchant_domain_limit: 1 })
+const policy = ref({ deposit_minimum: '10.00', fee_minimum: '0.01', merchant_domain_limit: 1 })
 const domainLimit = computed(() => Math.max(1, Number(policy.value.merchant_domain_limit) || 1))
-const hasDomain = computed(() => form.domains.some(value => value.trim()))
 const belowMinimum = computed(() => Number(form.deposit || 0) < Number(policy.value.deposit_minimum))
 // 保证金低于门槛时默认停用商户状态，管理员仍可手动改回
 watch(() => form.deposit, () => { form.disabled = belowMinimum.value })
 function rate(user) { return user.order_count ? (user.paid_count / user.order_count * 100).toFixed(1) : '—' }
 async function openCreate() {
   error.value = ''; Object.assign(form, blank()); createDialog.value.showModal()
+  try { groups.value = (await api('/api/admin/merchant-groups')).groups } catch (e) { error.value = errorText(e) }
   try { policy.value = { ...policy.value, ...await api('/api/admin/policy') } } catch { /* 保留默认值 */ }
   form.disabled = belowMinimum.value
 }
 async function create() {
   busy.value = true; error.value = ''
   try {
-    await api('/api/admin/users', { method: 'POST', body: JSON.stringify({ email: form.email, password: form.password, domains: form.domains.map(value => value.trim()).filter(Boolean), callback_whitelist: form.whitelist, disabled: form.disabled, pay_enabled: form.payEnabled, deposit: form.deposit || '0.00' }) })
+    await api('/api/admin/users', { method: 'POST', body: JSON.stringify({ email: form.email, password: form.password, domains: form.domains.map(value => value.trim()).filter(Boolean), disabled: form.disabled, pay_enabled: form.payEnabled, group_id: form.groupId, deposit: form.deposit || '0.00' }) })
     createDialog.value.close(); Object.assign(form, blank()); await rows.load(); c.refresh(true); c.toast(t('商户已创建', 'Merchant created'))
   } catch (e) { error.value = errorText(e) }
   finally { busy.value = false }
@@ -56,16 +60,25 @@ function reviewLabel(user) { return ({ pending: t('待审核', 'Pending'), appro
 function reviewTone(user) { return ({ pending: 'wait', approved: 'delivered', rejected: 'failed' })[user.review] || 'neutral' }
 async function releaseRisk() { busy.value = true; try { await api(`/api/admin/users/${riskUser.value.id}/risk-release`, { method: 'POST' }); riskUser.value = null; await rows.load() } catch (e) { error.value = errorText(e) } finally { busy.value = false } }
 const rows = usePaged('/api/admin/users', 'users', () => ({ search: search.value }), c)
+async function setGroup(user, event) { const group_id=Number(event.target.value); try { await api(`/api/admin/users/${user.id}/group`, { method:'PUT', body:JSON.stringify({group_id}) }); await rows.load() } catch (e) { error.value=errorText(e); await rows.load() } }
+function generatePassword() {
+  const lower='abcdefghjkmnpqrstuvwxyz', upper='ABCDEFGHJKLMNPQRSTUVWXYZ', digits='23456789', symbols='!@#$%&*+-_'; const all=lower+upper+digits+symbols
+  const pick=set=>set[crypto.getRandomValues(new Uint32Array(1))[0]%set.length]
+  const chars=[pick(lower),pick(upper),pick(digits),pick(symbols)]
+  while(chars.length<14) chars.push(pick(all))
+  for(let i=chars.length-1;i>0;i--){const j=crypto.getRandomValues(new Uint32Array(1))[0]%(i+1);[chars[i],chars[j]]=[chars[j],chars[i]]}
+  form.password=chars.join('')
+}
 async function toggle() {
   busy.value = true; error.value = ''
-  try { await api(`/api/admin/users/${editing.value.id}/access`, { method: 'POST', body: JSON.stringify({ disabled: !editing.value.disabled }) }); editing.value = null; await rows.load(); c.toast(t('用户访问权限已更新。', 'User access updated.')) }
+  try { await api(`/api/admin/users/${editing.value.id}/access`, { method: 'POST', body: JSON.stringify({ disabled: !editing.value.disabled }) }); editing.value = null; await rows.load(); c.toast(t('商户访问权限已更新。', 'User access updated.')) }
   catch (e) { error.value = errorText(e) }
   finally { busy.value = false }
 }
 </script>
 <template>
-  <div class="console-page-heading"><div><h2>{{ t('用户管理', 'User management') }}</h2><p>{{ t('一个管理员，独立的用户账户与 API 权限。', 'One administrator. Separate user accounts and API access.') }}</p></div><button class="button" @click="openCreate"><Icon name="plus" :size="16" />{{ t('新增用户', 'Add user') }}</button></div>
-  <section class="hig-card"><div class="table-toolbar"><div><h3>{{ t('接入用户', 'Connected users') }}</h3><span class="field-hint">{{ t('账户、密钥状态及累计交易', 'Accounts, key status, and lifetime payments') }}</span></div><label class="console-search compact-search"><Icon name="search" :size="16" /><input v-model.lazy="search" :placeholder="t('搜索邮箱', 'Search email')" :aria-label="t('搜索用户邮箱', 'Search user email')" /></label></div><p v-if="rows.error.value" class="error-box" role="alert">{{ rows.error.value }}</p><div v-if="rows.data.value.length" class="table-scroll"><table class="console-table user-table"><thead><tr><th>{{ t('用户', 'User') }}</th><th>{{ t('角色', 'Role') }}</th><th>{{ t('商户 ID', 'Merchant ID') }}</th><th>{{ t('累计收款', 'Revenue') }}</th><th>{{ t('成功率 / 订单数', 'Success / Orders') }}</th><th>{{ t('状态', 'Access') }}</th><th>{{ t('准入状态','Review') }}</th><th class="align-right"><span class="action-head">{{ t('操作', 'Actions') }}</span></th></tr></thead><tbody><tr v-for="user in rows.data.value" :key="user.id"><td><div class="user-cell"><span class="table-avatar">{{ user.email[0].toUpperCase() }}</span><span><b>{{ user.email }}</b><small>{{ fullDate(user.created_at) }}</small></span></div></td><td><span class="role-pill">{{ user.role === 'admin' ? t('管理员', 'Administrator') : t('普通用户', 'User') }}</span></td><td><code>{{ user.merchant_id || '—' }}</code><small v-if="user.domains" class="domain-links"><a v-for="host in user.domains.split('、')" :key="host" :href="`https://${host}`" target="_blank" rel="noopener noreferrer">{{ host }}</a></small></td><td><button type="button" class="text-link numeric" :disabled="!user.merchant_id" @click="openOrders(user)" :title="t('查看该商户的订单', 'Open this merchant\'s orders')">¥ {{ amount(user.revenue_cents) }}</button></td><td><button type="button" class="text-link numeric" :disabled="!user.merchant_id" @click="openOrders(user)">{{ rate(user) }}{{ user.order_count ? '%' : '' }}</button><small>{{ user.order_count }} {{ t('笔订单', 'orders') }}</small></td><td><span class="state-badge" :class="user.disabled ? 'failed' : 'delivered'"><i></i>{{ user.disabled ? t('已停用', 'Disabled') : t('正常', 'Active') }}</span><small><button type="button" class="text-link" :class="{ 'text-red': !user.pay_enabled }" :disabled="busy || user.role === 'admin'" @click="payUser = user">{{ user.pay_enabled ? t('支付权限：开启', 'Pay: on') : t('支付权限：关闭', 'Pay: off') }}</button></small></td><td><span class="state-badge" :class="reviewTone(user)"><i></i>{{ reviewLabel(user) }}</span><small v-if="user.review === 'pending'">{{ t('未审核不能发起新订单', 'No new orders until reviewed') }}</small><small v-if="user.fee_due>user.fee_paid">{{ t('注册费待支付','Registration fee due') }}</small><small v-if="user.risk_hold">{{ t('风控暂停','Risk hold') }} <button class="text-link" @click="riskUser=user">{{ t('解除','Release') }}</button></small></td><td class="align-right"><div class="action-triple"><span><button v-if="user.role!=='admin'" type="button" class="text-link" @click="openReview(user)">{{ t('审核','Review') }}</button></span><span><button type="button" class="text-link" :disabled="!user.merchant_id" @click="merchantDialog.open(user.merchant_id)">{{ t('接口配置','Merchant API') }}</button></span><span><button v-if="user.role!=='admin'" type="button" class="text-link" :class="{ 'text-red': !user.disabled }" @click="editing = user; error = ''">{{ user.disabled ? t('恢复访问', 'Enable') : t('停用', 'Disable') }}</button></span></div></td></tr></tbody></table></div><EmptyState v-else icon="users" :title="rows.loading.value ? t('正在读取用户…', 'Loading users…') : t('没有匹配的用户', 'No matching users')" /><Pagination v-model:page="rows.page.value" :total="rows.total.value" :loading="rows.loading.value" /></section>
+  <div class="console-page-heading"><div><h2>{{ t('商户管理', 'Merchant management') }}</h2><p>{{ t('管理员管理商户账户、计费分组和支付准入。', 'Manage merchant accounts, billing groups and payment access.') }}</p></div><button class="button" @click="openCreate"><Icon name="plus" :size="16" />{{ t('新增商户', 'Add merchant') }}</button></div>
+  <section class="hig-card"><div class="table-toolbar"><div><h3>{{ t('商户列表', 'Merchants') }}</h3><span class="field-hint">{{ t('账户、计费分组及累计交易', 'Accounts, billing groups, and lifetime payments') }}</span></div><label class="console-search compact-search"><Icon name="search" :size="16" /><input v-model.lazy="search" :placeholder="t('搜索邮箱', 'Search email')" :aria-label="t('搜索用户邮箱', 'Search user email')" /></label></div><p v-if="rows.error.value" class="error-box" role="alert">{{ rows.error.value }}</p><div v-if="rows.data.value.length" class="table-scroll"><table class="console-table user-table"><thead><tr><th>{{ t('商户', 'Merchant') }}</th><th>{{ t('角色', 'Role') }}</th><th>{{ t('商户 ID', 'Merchant ID') }}</th><th>{{ t('计费分组','Billing group') }}</th><th>{{ t('累计收款', 'Revenue') }}</th><th>{{ t('成功率 / 订单数', 'Success / Orders') }}</th><th>{{ t('状态', 'Access') }}</th><th>{{ t('准入状态','Review') }}</th><th class="align-right"><span class="action-head">{{ t('操作', 'Actions') }}</span></th></tr></thead><tbody><tr v-for="user in rows.data.value" :key="user.id"><td><div class="user-cell"><span class="table-avatar">{{ user.email[0].toUpperCase() }}</span><span><b>{{ user.email }}</b><small>{{ fullDate(user.created_at) }}</small></span></div></td><td><span class="role-pill">{{ user.role === 'admin' ? t('管理员', 'Administrator') : t('普通商户', 'Merchant') }}</span></td><td><code>{{ user.merchant_id || '—' }}</code><small v-if="user.domains" class="domain-links"><a v-for="host in user.domains.split('、')" :key="host" :href="`https://${host}`" target="_blank" rel="noopener noreferrer">{{ host }}</a></small></td><td><select v-if="user.role !== 'admin'" class="field group-select" :value="user.group_id" @change="setGroup(user,$event)"><option v-for="group in groups" :key="group.id" :value="group.id">{{ group.name }}</option></select><span v-else>{{ groups.find(group => group.id === user.group_id)?.name || '管理员计费组' }}</span></td><td><button type="button" class="text-link numeric" :disabled="!user.merchant_id" @click="openOrders(user)" :title="t('查看该商户的订单', 'Open this merchant\'s orders')">¥ {{ amount(user.revenue_cents) }}</button></td><td><button type="button" class="text-link numeric" :disabled="!user.merchant_id" @click="openOrders(user)">{{ rate(user) }}{{ user.order_count ? '%' : '' }}</button><small>{{ user.order_count }} {{ t('笔订单', 'orders') }}</small></td><td><span class="state-badge" :class="user.disabled ? 'failed' : 'delivered'"><i></i>{{ user.disabled ? t('已停用', 'Disabled') : t('正常', 'Active') }}</span><small><button type="button" class="text-link" :class="{ 'text-red': !user.pay_enabled }" :disabled="busy || user.role === 'admin'" @click="payUser = user">{{ user.pay_enabled ? t('支付权限：开启', 'Pay: on') : t('支付权限：关闭', 'Pay: off') }}</button></small></td><td><span class="state-badge" :class="reviewTone(user)"><i></i>{{ reviewLabel(user) }}</span><small v-if="user.review === 'pending'">{{ t('未审核不能发起新订单', 'No new orders until reviewed') }}</small><small v-if="user.fee_due>user.fee_paid">{{ t('注册费待支付','Registration fee due') }}</small><small v-if="user.risk_hold">{{ t('风控暂停','Risk hold') }} <button class="text-link" @click="riskUser=user">{{ t('解除','Release') }}</button></small></td><td class="align-right"><div class="action-triple"><span><button v-if="user.role!=='admin'" type="button" class="text-link" @click="openReview(user)">{{ t('审核','Review') }}</button></span><span><button type="button" class="text-link" :disabled="!user.merchant_id" @click="merchantDialog.open(user.merchant_id)">{{ t('接口配置','Merchant API') }}</button></span><span><button v-if="user.role!=='admin'" type="button" class="text-link" :class="{ 'text-red': !user.disabled }" @click="editing = user; error = ''">{{ user.disabled ? t('恢复访问', 'Enable') : t('停用', 'Disable') }}</button></span></div></td></tr></tbody></table></div><EmptyState v-else icon="users" :title="rows.loading.value ? t('正在读取用户…', 'Loading users…') : t('没有匹配的用户', 'No matching users')" /><Pagination v-model:page="rows.page.value" :total="rows.total.value" :loading="rows.loading.value" /></section>
   <MerchantDialog ref="merchantDialog" />
   <dialog ref="createDialog" class="console-dialog merchant-create" :aria-label="t('新增商户', 'Add merchant')" @cancel.prevent="!busy && createDialog.close()" @close="error = ''">
     <div class="dialog-heading"><h2>{{ t('新增商户', 'Add merchant') }}</h2><button class="icon-button" :disabled="busy" :aria-label="t('关闭', 'Close')" @click="createDialog.close()"><Icon name="x" /></button></div>
@@ -74,20 +87,20 @@ async function toggle() {
       <label for="new-email">{{ t('邮箱（登录账号）', 'Email (sign-in)') }}</label>
       <input id="new-email" v-model="form.email" type="email" required autocomplete="off" maxlength="254" />
       <label for="new-password">{{ t('登录密码', 'Password') }}</label>
-      <input id="new-password" v-model="form.password" type="password" minlength="12" maxlength="128" required autocomplete="new-password" />
+      <div class="password-row"><input id="new-password" v-model="form.password" type="password" minlength="12" maxlength="128" required autocomplete="new-password" /><button type="button" class="button button-secondary" @click="generatePassword">{{ t('生成密码','Generate') }}</button></div>
       <p class="field-hint">{{ t('至少 12 个字符。请通过安全渠道告知账户持有人。', 'At least 12 characters. Share securely with the account owner.') }}</p>
       <label>{{ t('网站域名', 'Site domain') }}</label>
       <div v-for="(_, index) in form.domains" :key="index" class="domain-row"><input v-model="form.domains[index]" :placeholder="t('shop.example.com，可粘贴完整网址', 'shop.example.com — a full URL is fine')" maxlength="300" autocomplete="off" spellcheck="false" /><button v-if="form.domains.length > 1" type="button" class="icon-button" :aria-label="t('删除这个域名', 'Remove this domain')" @click="form.domains.splice(index, 1)"><Icon name="x" :size="16" /></button></div>
       <button v-if="form.domains.length < domainLimit" type="button" class="text-link" @click="form.domains.push('')">{{ t('添加域名', 'Add domain') }}</button>
-      <p class="field-hint">{{ t(`最多 ${domainLimit} 个，可留空；自动去掉协议与路径，保存后可直接点击访问`, `Up to ${domainLimit}; leave blank if unused. Scheme and path are removed and the domain stays clickable`) }}</p>
-      <label v-if="hasDomain" class="checkbox-row"><input type="checkbox" v-model="form.whitelist" />{{ t('加入商户回调域名白名单', 'Add to the merchant callback domain allowlist') }}</label>
+      <p class="field-hint">{{ t(`最多 ${domainLimit} 个，可留空；自动去掉协议与路径，保存后可直接点击访问；填写后自动加入回调域名白名单`, `Up to ${domainLimit}; scheme and path are removed and a saved domain is added to the callback allowlist`) }}</p>
+      <label for="new-group">{{ t('商户分组','Billing group') }}</label><select id="new-group" v-model.number="form.groupId"><option v-for="group in groups.filter(group=>group.id!==2)" :key="group.id" :value="group.id">{{ group.name }}</option></select>
       <div class="form-grid">
         <div><label for="new-status">{{ t('商户状态', 'Merchant status') }}</label><select id="new-status" v-model="form.disabled"><option :value="false">{{ t('正常', 'Active') }}</option><option :value="true">{{ t('停用', 'Disabled') }}</option></select></div>
         <div><label for="new-pay">{{ t('支付权限', 'Payment permission') }}</label><select id="new-pay" v-model="form.payEnabled"><option :value="true">{{ t('开启', 'On') }}</option><option :value="false">{{ t('关闭', 'Off') }}</option></select></div>
       </div>
       <label for="new-deposit">{{ t('商户保证金余额', 'Merchant deposit balance') }}</label>
       <div class="currency-input"><span>¥</span><input id="new-deposit" v-model="form.deposit" inputmode="decimal" pattern="[0-9]+(\.[0-9]{1,2})?" maxlength="12" autocomplete="off" /></div>
-      <p class="field-hint">{{ t(`低于 ¥ ${policy.deposit_minimum} 时默认停用商户状态；手续费 ${policy.fee_rate}%，最低 ¥ ${policy.fee_minimum}`, `Below ¥${policy.deposit_minimum} the merchant starts disabled; fee ${policy.fee_rate}% with a ¥${policy.fee_minimum} minimum`) }}</p>
+      <p class="field-hint">{{ t(`低于 ¥ ${policy.deposit_minimum} 时默认停用商户状态；费率由所选商户分组决定`, `Below ¥${policy.deposit_minimum} the merchant starts disabled; the selected billing group sets the rate`) }}</p>
       <p v-if="error" class="error-box" role="alert">{{ error }}</p>
       <div class="dialog-actions"><button type="button" class="button button-secondary" :disabled="busy" @click="createDialog.close()">{{ t('取消', 'Cancel') }}</button><button class="button" :disabled="busy"><Icon v-if="busy" name="loader" class="spin" :size="16" />{{ t('创建商户', 'Create merchant') }}</button></div>
     </form>
@@ -97,10 +110,10 @@ async function toggle() {
 </template>
 <style scoped>
 .merchant-create { max-width: 520px; }
+.password-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; }
+.group-select { min-width:145px; }
 .domain-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .domain-row input { flex: 1; min-width: 0; }
-.checkbox-row { display: flex; align-items: center; gap: 9px; margin-top: 16px; font-size: 13px; }
-.checkbox-row input { width: 16px; height: 16px; min-height: 0; }
 .merchant-create .text-link { margin-bottom: 10px; }
 .domain-links { display: flex; flex-wrap: wrap; gap: 2px 8px; }
 .domain-links a { color: var(--accent); }

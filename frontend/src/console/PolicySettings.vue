@@ -20,11 +20,11 @@ const pick = (key, label, options) => ({ key, type: 'select', label, options })
 const lines = (key, label, hint) => ({ key, type: 'list', label, hint })
 const tags = (key, label, hint) => ({ key, type: 'tags', label, hint })
 const groups = [
-  { title: ['注册准入', 'Registration'], fields: [bool('registration_review', ['开启注册审核', 'Review new merchants']), bool('registration_paid', ['开启注册付费', 'Charge a registration fee']), money('registration_fee', ['注册费用', 'Registration fee'])] },
+  { title: ['注册准入', 'Registration'], fields: [bool('registration_paid', ['开启注册付费', 'Charge a registration fee']), money('registration_fee', ['注册费用', 'Registration fee'])] },
   { title: ['商品与域名', 'Items & domains'], fields: [tags('blocked_keywords', ['商品屏蔽关键词', 'Blocked item keywords'], ['输入后按回车添加；商品名称包含其中任一个词就会被拦截', 'Press Enter to add; an item is blocked when its name contains any of them']), { key: 'blocked_message', type: 'text', label: ['商品被屏蔽时显示内容', 'Message for blocked items'] },
     count('merchant_domain_limit', ['每个商户可填写的网站域名数量', 'Site domains per merchant'], ['个', 'domains'], [1, 10]),
     bool('domain_add', ['允许商户申请授权支付域名', 'Merchants may request payment domains']), bool('domain_enforce', ['禁止未授权支付域名下单', 'Block orders from unauthorised domains'])] },
-  { title: ['手续费与退款', 'Fees & refunds'], fields: [rate('fee_rate', ['平台服务费率', 'Platform fee rate']), money('fee_threshold', ['手续费低于此金额时触发最低扣除', 'Minimum fee applies below']), money('fee_minimum', ['最低扣除金额', 'Minimum fee']),
+  { title: ['最低手续费与退款', 'Minimum fees & refunds'], fields: [money('fee_threshold', ['服务费低于此金额时触发最低扣除', 'Minimum service fee applies below']), money('fee_minimum', ['最低服务费金额', 'Minimum service fee']),
     bool('merchant_refund', ['开启商户后台自助退款', 'Allow merchant self-service refunds']),
     pick('refund_fee_payer', ['退款服务费承担方', 'Who bears the fee on refunds'], [['platform', ['平台承担，按比例返还服务费', 'Platform — fee refunded pro rata']], ['merchant', ['商户承担，服务费不退', 'Merchant — fee not refunded']]])] },
   { title: ['商户保证金', 'Merchant deposit'], note: ['通过已核验的支付充值，冻结到期且无未决交易后可转为可用余额', 'Paid through a verified payment; released to the available balance after the freeze and with no open transactions'], fields: [bool('deposit_enabled', ['开启商户保证金门槛', 'Require a merchant deposit']), money('deposit_minimum', ['保证金最低充值金额', 'Minimum deposit']), count('deposit_freeze_days', ['保证金最少冻结天数', 'Minimum freeze'], days, [0, 3650])] },

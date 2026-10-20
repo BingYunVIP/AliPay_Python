@@ -22,7 +22,7 @@ async function submit() {
     auth.user = data.user; auth.csrf = data.csrf_token; auth.key = null
     password.value = ''
     const next = route.query.next
-    await router.replace(typeof next === 'string' && /^\/dashboard(?:\?|$)/.test(next) ? next : '/dashboard')
+    await router.replace(data.user.must_change_credentials ? '/admin/security/setup' : typeof next === 'string' && next.startsWith(`/${data.user.role}/`) ? next : `/${data.user.role}/overview`)
   } catch (e) { error.value = errorText(e).replace(/[。！？.!?]+$/u, '') }
   finally { busy.value = false;human.value?.reset();token.value='' }
 }
@@ -31,7 +31,7 @@ async function submit() {
   <div class="auth-shell byh-wrap">
     <form class="auth-card panel" @submit.prevent="submit">
       <div class="auth-card-heading"><Brand class="auth-logo" name="bingyun" /><h2>{{ register ? t('创建冰云账户', 'Create your account') : t('欢迎回来', 'Welcome back') }}</h2></div>
-      <label for="email">{{ register ? t('邮箱地址', 'Email address') : t('账号或邮箱', 'Account or email') }}</label><input id="email" v-model="email" :type="register ? 'email' : 'text'" autocomplete="username" required maxlength="254" :placeholder="register ? 'you@example.com' : 'admin'" />
+      <label for="email">{{ register ? t('邮箱地址', 'Email address') : t('邮箱地址', 'Email address') }}</label><input id="email" v-model="email" type="email" autocomplete="username" required maxlength="254" placeholder="you@example.com" />
       <label for="password">{{ t('密码', 'Password') }}</label><input id="password" v-model="password" type="password" :autocomplete="register ? 'new-password' : 'current-password'" required :minlength="register ? 12 : 1" maxlength="128" :placeholder="register ? t('至少 12 个字符', 'At least 12 characters') : t('输入密码', 'Your password')" />
       <template v-if="register&&caps.email_verification"><label for="email-code">邮箱验证码</label><div class="auth-code-row"><input id="email-code" v-model="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required autocomplete="one-time-code"/><button type="button" class="button button-secondary" :disabled="sending||retry>0||(!token&&caps.turnstile?.enabled&&action==='email_code')" @click="sendCode">{{ retry?`${retry}s`:sent?'重新验证并发送':'发送验证码' }}</button></div></template>
       <HumanCheck v-if="caps.turnstile?.enabled" ref="human" :site-key="caps.turnstile.site_key" :action="action" @token="token=$event"/>

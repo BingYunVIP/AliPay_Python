@@ -5,13 +5,29 @@ export const date = timestamp => timestamp ? new Date(timestamp * 1000).toLocale
 export const fullDate = timestamp => timestamp ? new Date(timestamp * 1000).toLocaleString(locale.value === 'zh' ? 'zh-CN' : 'en-GB', { hour12: false }) : '—'
 export const dayOnly = timestamp => timestamp ? new Date(timestamp * 1000).toLocaleDateString(locale.value === 'zh' ? 'zh-CN' : 'en-GB', { year: 'numeric', month: '2-digit', day: '2-digit' }) : '—'
 export const time = timestamp => timestamp ? new Date(timestamp * 1000).toLocaleTimeString(locale.value === 'zh' ? 'zh-CN' : 'en-GB', { hour12: false }) : '—'
-export const status = value => ({ CREATED: t('待支付', 'Awaiting payment'), PAID: t('已支付', 'Paid'), CLOSED: t('已关闭', 'Closed'), EXPIRED: t('已过期', 'Expired'), REFUNDING: t('退款处理中', 'Refund pending'), PARTIALLY_REFUNDED: t('部分退款', 'Partially refunded'), REFUNDED: t('已退款', 'Refunded'), pending: t('等待投递', 'Pending'), delivered: t('投递成功', 'Delivered'), failed: t('投递失败', 'Failed') })[value] || value
+export const status = value => ({ CREATED: t('待支付', 'Awaiting payment'), CONFIRMING:t('正在确认','Confirming'), PAID: t('已支付', 'Paid'), CLOSED: t('已关闭', 'Closed'), EXPIRED: t('已过期', 'Expired'), REFUNDING: t('退款处理中', 'Refund pending'), PARTIALLY_REFUNDED: t('部分退款', 'Partially refunded'), REFUNDED: t('已退款', 'Refunded'), pending: t('等待投递', 'Pending'), delivered: t('投递成功', 'Delivered'), failed: t('投递失败', 'Failed') })[value] || value
 export const productName = value => ({ page: t('网页支付', 'Web payment'), wap: t('手机支付', 'Mobile payment'), app: t('APP 支付', 'App payment'), mini: t('小程序支付', 'Mini program') })[value] || value
 const messages = {
+  admin_credentials_initialized:['管理员首次凭据已修改','Administrator credentials initialized'],pricing_settings_saved:['汇率设置已保存','Pricing settings saved'],crypto_policy_saved:['Crypto 参数已保存','Crypto policy saved'],channel_config_deleted:['收款配置已删除','Channel configuration deleted'],
+  crypto_refund_reservation_cancelled:['Crypto 退款预留已取消','Crypto refund reservation cancelled'],
+  crypto_network_checked: ['Crypto 网络已检查', 'Crypto network checked'],
+  crypto_transfer_observed: ['发现匹配的链上转账', 'Matching chain transfer observed'],
+  crypto_scan_failed: ['扫链失败，等待重试', 'Chain scan failed; retry pending'],
+  crypto_payment_confirmed: ['链上收款已确认', 'Chain payment confirmed'],
+  crypto_transfer_seen: ['链上转账等待确认', 'Chain transfer awaiting confirmation'],
+  crypto_confirmed: ['链上收款已入账', 'Chain payment recorded'],
+  crypto_reorg: ['检测到链重组，重新核验', 'Chain reorganization detected'],
+  crypto_refund_transfer_required: ['退款已预留，等待人工链上转账', 'Refund reserved; manual transfer required'],
+  crypto_refund_evidence_recorded: ['管理员已登记链上退款凭据', 'Administrator recorded refund evidence'],
+
   cashier_frame_ready: ['支付宝原生二维码页面已就绪', 'Alipay original QR frame ready'],
   cashier_qr_requested: ['正在读取支付宝收银台二维码', 'Loading the Alipay cashier QR'],
   cashier_qr_ready: ['支付宝收银台二维码已就绪', 'Alipay cashier QR ready'],
   cashier_qr_unavailable: ['未能获取支付宝收银台二维码', 'Alipay cashier QR unavailable'],
+  merchant_group_saved: ['商户分组费率已保存', 'Billing group updated'],
+  merchant_group_assigned: ['商户计费分组已调整', 'Merchant billing group changed'],
+  crypto_network_saved: ['Crypto 网络配置已保存', 'Crypto network settings saved'],
+  crypto_order_created: ['Crypto 收款订单已创建', 'Crypto payment created'],
   channel_config_added: ['已添加收款配置', 'Payment configuration added'],
   order_deleted: ['订单已移入已删除', 'Order moved to deleted'],
   order_restored: ['订单已恢复', 'Order restored'],
@@ -103,6 +119,7 @@ export const logMessage = reason => messages[reason] ? t(...messages[reason]) : 
 const stages = {
   refund: ['退款处理', 'Refunds'], create: ['订单创建', 'Order creation'], sdk: ['渠道接口', 'Channel API'], query: ['交易查询', 'Payment query'], notify: ['支付通知', 'Notifications'],
   merchant: ['商户', 'Merchants'], console: ['操作审计', 'Audit'], return: ['同步返回', 'Browser return'], checkout: ['收银台', 'Checkout'], order: ['订单状态', 'Order status'],
+  crypto: ['Crypto 收款', 'Crypto payments'],
   request: ['接口请求', 'API requests'], settings: ['系统设置', 'Settings'], settlement: ['结算', 'Settlements'], mail: ['邮件', 'Email'], task: ['计划任务', 'Tasks'], domain: ['支付域名', 'Domains'], risk: ['风控', 'Risk'],
 }
 export const logCategories = Object.keys(stages)

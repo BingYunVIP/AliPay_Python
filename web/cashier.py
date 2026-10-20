@@ -153,10 +153,12 @@ def fetch_cashier_qr(pay_url, stats=None):
 def qr_inline(order, now=None):
     """The styled QR itself, so that the browser needs no second request to show it. Only for a live Alipay website order."""
     now = int(time.time()) if now is None else now
-    if order["channel"] != "alipay" or order["product"] != "page" or not order["cashier_qr"] or order["paid_at"] or order["status"] != "CREATED" or order["expires_at"] <= now:
+    if order["channel"] not in {"alipay","wechat","crypto"} or order["product"] != "page" or not order["cashier_qr"] or order["paid_at"] or order["status"] not in {"CREATED","CONFIRMING"} or order["expires_at"] <= now:
         return None
     from .qrcode import payment_qr_svg
-    try: return payment_qr_svg(order["cashier_qr"], "alipay")
+    try:
+        payload=__import__('json').loads(order.get('payment_payload') or '{}')
+        return payment_qr_svg(order["cashier_qr"], order["channel"], payload.get('asset',''))
     except ValueError: return None
 
 

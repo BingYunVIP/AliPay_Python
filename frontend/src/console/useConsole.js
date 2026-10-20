@@ -14,15 +14,17 @@ export function useConsole() {
     { id: 'testpay', label: t('测试支付', 'Test payment'), icon: 'test', group: 'core' },
     { id: 'orders', label: t('订单记录', 'Orders'), icon: 'receipt', group: 'core' },
     { id: 'webhook', label: t('回调服务', 'Callbacks'), icon: 'webhook', group: 'core' },
-    ...(isAdmin.value ? [{ id: 'users', label: t('用户管理', 'Users'), icon: 'users', group: 'system' },
+    ...(isAdmin.value ? [{ id: 'users', label: t('商户管理', 'Merchants'), icon: 'users', group: 'system' },
+      {id:'rates',label:t('汇率监控','Exchange rates'),icon:'trend',group:'system'},
+      { id: 'groups', label: t('商户分组','Merchant groups'), icon: 'groups', group: 'system' },
       { id: 'settings', label: t('系统管理', 'Settings'), icon: 'settings', group: 'system' }] : []),
     { id: 'logs', label: t('系统日志', 'Event log'), icon: 'shield', group: 'system' },
     { id: 'account',label:t('账户与结算','Account & settlements'),icon:'wallet',group:'account'},
     ...(isAdmin.value?[{id:'settlements',label:t('结算管理','Settlements'),icon:'card',group:'system'}]:[]),
   ])
-  const tab = computed(() => menus.value.some(m => m.id === route.query.tab) ? route.query.tab : 'overview')
+  const tab = computed(() => route.meta.page === 'merchants' ? 'users' : route.meta.page || 'overview')
   const current = computed(() => menus.value.find(m => m.id === tab.value))
-  function navigate(id, query = {}) { return router.push({ path: '/dashboard', query: { tab: id, ...query } }) }
+  function navigate(id, query = {}) { return router.push({ path: `/${auth.user.role}/${id === 'users' ? 'merchants' : id}`, query }) }
   // A page with edits that are not saved yet registers a check; leaving the page or closing the tab asks first
   const unsaved = new Set()
   function guard(isDirty) { unsaved.add(isDirty); onBeforeUnmount(() => unsaved.delete(isDirty)) }

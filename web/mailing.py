@@ -42,9 +42,7 @@ def render(template,variables):
 class Mailer:
     def __init__(self,store,cipher,trace):
         self.store,self.cipher,self.trace=store,cipher,trace
-        with store.connect() as db:db.executescript('''CREATE TABLE IF NOT EXISTS mail_templates(event TEXT,language TEXT,subject TEXT,html TEXT,PRIMARY KEY(event,language));
-          CREATE TABLE IF NOT EXISTS mail_jobs(id INTEGER PRIMARY KEY,dedupe TEXT UNIQUE,payload BLOB,status TEXT DEFAULT 'pending',attempts INTEGER DEFAULT 0,next_at INTEGER,locked_until INTEGER DEFAULT 0,error TEXT DEFAULT '',created_at INTEGER);
-          CREATE TABLE IF NOT EXISTS email_codes(email TEXT PRIMARY KEY,hash TEXT,expires INTEGER,attempts INTEGER DEFAULT 0,consumed INTEGER DEFAULT 0);''')
+
     def config(self,db=None):
         if db is None:
             with self.store.connect() as db:return self.config(db)
